@@ -12,7 +12,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.0.2"
+VERSION = "0.0.3"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -464,6 +464,47 @@ def get_whole_disk_fstype(path):
         return ""
 
 
+def check_clone_source_health(source, parts):
+    """クローン開始前のコピー元健全性チェック。異常があればエラー文、問題なければ None を返す。
+    partclone は破損した NTFS を複製できず、実行するとコピー先が中途半端に書き換わるため事前に止める。
+    ntfsresize --info は読み取り専用のためディスク内容を変更しない"""
+    for p in parts or []:
+        ppath = p.get("path", "") if isinstance(p, dict) else ""
+        if not ppath:
+            continue
+        fstype = (p.get("fstype") or "").strip() if isinstance(p, dict) else ""
+        if not fstype:
+            fstype = _get_blk_fstype(ppath)
+        if fstype.lower() != "ntfs":
+            continue
+        try:
+            r = subprocess.run(["ntfsresize", "--info", ppath],
+                capture_output=True, text=True, timeout=60)
+        except FileNotFoundError:
+            return None  # ntfsresize 不在時は判定不可（Clonezilla 側に委ねる）
+        except Exception:
+            return None
+        if r.returncode != 0:
+            out = ((r.stdout or "") + (r.stderr or "")).strip()
+            detail = ""
+            for line in out.split("\n"):
+                s = line.strip()
+                if not s:
+                    continue
+                low = s.lower()
+                if ("inconsistent" in low or "chkdsk" in low or "mft" in low
+                        or "dirty" in low or "error" in low):
+                    detail = s[:160]
+                    break
+            msg = f"{ppath} の NTFS に異常があるためクローンを開始できません"
+            if detail:
+                msg += f"（{detail}）"
+            msg += ("。Windows で chkdsk /f を実行（修復後は2回再起動）してから再試行してください。"
+                "修復できない場合は「ddrescue」ページでセクタコピーしてください")
+            return msg
+    return None
+
+
 def get_disk_mountpoints(path):
     """指定ディスク配下のマウントポイント・swap 使用状況を返す [(dev, mp)]。mpが [SWAP] のものは swap"""
     out = []
@@ -624,6 +665,20 @@ def get_clone_progress():
             pass
     if status == "done":
         eta_text = "完了"
+    # 異常終了時の原因行を抜粋（UI表示用。LD_PRELOAD等のノイズ行は除外）
+    error_detail = ""
+    if status == "error" or failed:
+        for line in reversed(text.split("\n")):
+            s = line.strip()[:200]
+            if not s:
+                continue
+            low = s.lower()
+            if "ld_preload" in low or "libstdbuf" in low:
+                continue
+            if ("partclone fail" in low or "not ntfs" in low
+                    or "failed to clone" in low or "error" in low or "fail" in low):
+                error_detail = s
+                break
     return {"running": running, "returncode": rc, "failed": failed,
         "status": status, "adopted": adopted,
         "job": job,
@@ -632,6 +687,7 @@ def get_clone_progress():
         "current_device": cur_dev, "op_remaining": op_remaining,
         "rate": rate_text, "phase": phase,
         "eta_text": eta_text, "elapsed_sec": elapsed,
+        "error_detail": error_detail,
         "parts": job.get("parts", []), "log_file": job.get("log_file", "")}
 
 
@@ -3130,6 +3186,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             d_size = (devs.get(dest) or {}).get("size_bytes") or get_device_size_bytes(dest)
             if s_size and d_size and d_size < s_size:
                 self._json({"error": f"コピー先 ({dest}) がコピー元より小さいため実行できません"}); return
+        # コピー元パーティションの健全性チェック（disk→disk / disk→image）
+        # 破損NTFSは partclone が複製できず異常終了＋コピー先が中途半端になるため事前に止める
+        if source_type == "disk":
+            health_err = check_clone_source_health(source, (devs.get(source) or {}).get("partitions", []))
+            if health_err:
+                self._json({"error": health_err}); return
         # イメージ指定の検証
         src_img = dst_img = None
         if source_type == "image":

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Clonezilla 高速クローン - Disk Manager v.0.0.2</title>
+<title>Clonezilla 高速クローン - Disk Manager v.0.0.3</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -590,6 +590,7 @@ function renderProgress(p) {
     if (p.op_remaining) sub += ' ｜ この工程の残り ' + p.op_remaining;
     sub += ' ｜ 経過 ' + fmtElapsed(p.elapsed_sec) + ' ｜ ' + (p.eta_text || '');
     if (p.phase) sub += '\n状況: ' + p.phase;
+    if (!p.running && p.status !== 'done' && p.error_detail) sub += '\n原因: ' + p.error_detail;
     document.getElementById('prog-sub').textContent = sub;
 }
 
