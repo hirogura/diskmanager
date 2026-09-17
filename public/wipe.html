@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ディスク完全消去 - Disk Manager</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.header{background:#1e293b;padding:16px 24px;border-bottom:1px solid #334155;display:flex;align-items:center;gap:16px}
+.header h1{font-size:1.4em;color:#38bdf8}
+.header .version{color:#94a3b8;font-size:0.85em;font-weight:normal;padding-top:4px}
+.header-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+.btn-header{padding:6px 14px;border:none;border-radius:6px;background:#334155;color:#e2e8f0;font-size:0.82em;cursor:pointer;transition:all 0.2s}
+.btn-header:hover{background:#475569}
+.btn-header:disabled{opacity:0.5;cursor:not-allowed}
+.main{max-width:1000px;margin:0 auto;padding:24px}
+.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:20px;margin-bottom:20px}
+.card h2{font-size:1.1em;color:#38bdf8;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.warn{background:rgba(220,38,38,0.12);border:1px solid #dc2626;border-radius:8px;padding:14px 16px;margin-bottom:20px;color:#fca5a5;font-size:0.9em;line-height:1.7}
+.warn strong{color:#fecaca}
+.dev{border:1px solid #475569;border-radius:8px;padding:14px;margin-bottom:12px;background:#0f172a}
+.dev-top{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.dev-check{display:flex;flex-direction:column;gap:8px;min-width:150px}
+.dev-check label{display:flex;align-items:center;gap:6px;font-size:0.9em;cursor:pointer}
+.dev-check input[type=checkbox]{width:18px;height:18px}
+.dev-info{flex:1;min-width:240px}
+.dev-path{font-size:1.05em;font-weight:bold;color:#e2e8f0}
+.dev-meta{font-size:0.85em;color:#94a3b8;margin-top:4px;line-height:1.6}
+.dev-meta .serial{color:#7dd3fc;font-family:'Fira Code',monospace}
+.mount-warn{color:#f87171;font-weight:bold}
+.ssd-hint{color:#4ade80;font-size:0.82em}
+.part-table{width:100%;border-collapse:collapse;margin-top:10px;font-size:0.82em}
+.part-table th,.part-table td{border:1px solid #334155;padding:5px 8px;text-align:left}
+.part-table th{background:#1e293b;color:#94a3b8}
+.part-table td{font-family:'Fira Code',monospace;color:#cbd5e1}
+.radio-row{display:flex;gap:20px;flex-wrap:wrap;margin-top:8px}
+.radio-row label{display:flex;align-items:center;gap:8px;font-size:0.92em;cursor:pointer;background:#0f172a;border:1px solid #475569;border-radius:6px;padding:10px 14px}
+.radio-row input[type=radio]{width:16px;height:16px}
+.radio-row input[type=number]{width:64px;padding:6px;background:#1e293b;border:1px solid #475569;border-radius:6px;color:#e2e8f0}
+.note{font-size:0.82em;color:#94a3b8;margin-top:10px;line-height:1.6}
+.btn{padding:12px 28px;border:none;border-radius:6px;cursor:pointer;font-size:1em;font-weight:600;transition:all 0.2s}
+.btn-exec{background:#dc2626;color:#fff;font-size:1.05em}
+.btn-exec:hover{background:#b91c1c}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.btn-stop{background:#475569;color:#e2e8f0}
+.btn-stop:hover{background:#64748b}
+.btn-group{display:flex;gap:10px;margin-top:16px;align-items:center}
+.prog{margin-top:14px;display:none}
+.prog-item{border:1px solid #334155;border-radius:6px;padding:10px 12px;margin-bottom:10px;background:#0f172a}
+.prog-head{display:flex;justify-content:space-between;font-size:0.88em;margin-bottom:6px;gap:8px;flex-wrap:wrap}
+.prog-bar{height:12px;background:#334155;border-radius:6px;overflow:hidden}
+.prog-fill{height:100%;background:#2563eb;border-radius:6px;transition:width 0.5s;min-width:0}
+.prog-item.done .prog-fill{background:#16a34a}
+.prog-item.error .prog-fill{background:#dc2626}
+.prog-sub{font-size:0.8em;color:#94a3b8;margin-top:4px}
+.status-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:0.8em;font-weight:bold}
+.status-running{background:rgba(34,197,94,0.2);color:#22c55e}
+.status-idle{background:rgba(100,116,139,0.2);color:#94a3b8}
+.notify{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:6px;color:#fff;z-index:1000;animation:fadeIn 0.3s}
+.notify.success{background:#16a34a}.notify.error{background:#dc2626}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+</style>
+<link rel="stylesheet" href="/pane.css">
+<script src="/pane.js"></script>
+</head>
+<body>
+<div class="header">
+    <h1>ディスク完全消去</h1>
+        <div class="header-actions">
+        <button class="btn-header pane-back" onclick="location.href='/'">レスキューに戻る</button>
+        <button class="btn-header" onclick="location.reload()">リフレッシュ</button>
+    </div>
+    <span id="status-badge" class="status-badge status-idle">待機中</span>
+</div>
+<div class="main">
+    <div class="warn">
+        <strong>警告：この操作は取り消せません。</strong><br>
+        選択したディスクの全データが完全に消去されます。デバイス名・容量・パーティション情報をよく確認し、
+        対象ディスクを間違えないよう十分注意してください。<br>
+        マウント中のディスクは保護のため選択できません（先にアンマウントしてください）。
+    </div>
+
+    <div class="card">
+        <h2>1. 対象ディスクの選択（複数可）
+            <button class="btn-header" style="margin-left:auto" onclick="loadDevices()">一覧を更新</button>
+        </h2>
+        <div id="dev-list">読み込み中...</div>
+    </div>
+
+    <div class="card">
+        <h2>2. 消去方式の選択（HDD用）</h2>
+        <div class="radio-row">
+            <label><input type="radio" name="method" value="zero" checked> 0のみ書き込み（1回・高速）</label>
+            <label><input type="radio" name="method" value="random"> 乱数を複数回書き込み
+                <input type="number" id="passes" value="3" min="1" max="7" onclick="event.stopPropagation()" title="回数（1〜7）"> 回
+            </label>
+        </div>
+        <div class="note">
+            ※ SSDにチェックを入れたディスクは上記方式に関係なく自動で消去します。<br>
+            ・NVMe接続 → <b>Format（Sanitize相当）</b>／・SATA接続 → <b>Secure Erase</b>／・USB接続等 → <b>blkdiscard（Sanitize相当。非対応時はゼロ消去）</b><br>
+            ※ SSDの消去コマンドは進捗％を取得できないため、実行中表示と経過時間のみ表示します。
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>3. 実行</h2>
+        <div class="btn-group">
+            <button class="btn btn-exec" id="btn-exec" onclick="startWipe()">実行</button>
+            <button class="btn btn-stop" id="btn-stop" onclick="stopWipe()" disabled>中断</button>
+        </div>
+        <div class="prog" id="prog"></div>
+    </div>
+</div>
+
+<script>
+let devices = [];
+let pollTimer = null;
+let seenJobId = null;
+
+function notify(msg, type) {
+    const el = document.createElement('div');
+    el.className = 'notify ' + type;
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3500);
+}
+
+function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function loadDevices() {
+    const list = document.getElementById('dev-list');
+    list.textContent = '読み込み中...';
+    try {
+        const res = await fetch('/api/wipe-devices');
+        devices = await res.json();
+        if (!devices.length) { list.textContent = 'デバイスが見つかりません'; return; }
+        list.innerHTML = '';
+        devices.forEach((d, i) => {
+            const div = document.createElement('div');
+            div.className = 'dev';
+            let parts = '';
+            if (d.partitions && d.partitions.length) {
+                parts = '<table class="part-table"><tr><th>パーティション</th><th>容量</th><th>FS</th><th>マウント</th></tr>' +
+                    d.partitions.map(p =>
+                        '<tr><td>' + esc(p.path) + '</td><td>' + esc(p.size) + '</td><td>' + esc(p.fstype || '-') + '</td><td>' + esc(p.mountpoint || '-') + '</td></tr>'
+                    ).join('') + '</table>';
+            } else {
+                parts = '<div class="dev-meta">パーティションなし</div>';
+            }
+            const disabled = d.has_mount ? 'disabled' : '';
+            const mountWarn = d.has_mount ? '<div class="mount-warn">マウント中のため選択不可（アンマウント後に再読込）</div>' : '';
+            const hint = d.ssd_hint ? '<span class="ssd-hint">SSDの可能性あり（rotational=0）。SSD欄の確認推奨</span>' : '';
+            div.innerHTML =
+                '<div class="dev-top">' +
+                '<div class="dev-check">' +
+                '<label><input type="checkbox" class="wipe-target" value="' + esc(d.path) + '" ' + disabled + '> 消去対象にする</label>' +
+                '<label><input type="checkbox" class="wipe-ssd" value="' + esc(d.path) + '"> SSDである</label>' +
+                '</div>' +
+                '<div class="dev-info">' +
+                '<div class="dev-path">' + esc(d.path) + ' — ' + esc(d.size) + '</div>' +
+                '<div class="dev-meta">モデル: ' + esc(d.model || '-') + ' / シリアル: <span class="serial">' + esc(d.serial || '-') + '</span><br>' +
+                '接続: ' + esc(d.tran || '不明') + ' ' + hint + '</div>' +
+                mountWarn + parts +
+                '</div></div>';
+            list.appendChild(div);
+        });
+    } catch (e) { list.textContent = '取得エラー: ' + e.message; }
+}
+
+function getSelected() {
+    const targets = [];
+    document.querySelectorAll('.wipe-target:checked').forEach(cb => {
+        const path = cb.value;
+        const ssdCb = document.querySelector('.wipe-ssd[value="' + path + '"]');
+        targets.push({path: path, is_ssd: !!(ssdCb && ssdCb.checked)});
+    });
+    return targets;
+}
+
+function getMethod() {
+    const m = document.querySelector('input[name=method]:checked');
+    let passes = parseInt(document.getElementById('passes').value, 10);
+    if (isNaN(passes)) passes = 3;
+    passes = Math.max(1, Math.min(7, passes));
+    return {method: m ? m.value : 'zero', passes: passes};
+}
+
+async function startWipe() {
+    const targets = getSelected();
+    if (!targets.length) { notify('対象ディスクを選択してください', 'error'); return; }
+    const mm = getMethod();
+    const lines = targets.map(t => '・' + t.path + (t.is_ssd ? ' [SSD]' : ' [HDD:' + (mm.method === 'zero' ? 'ゼロ1回' : '乱数' + mm.passes + '回') + ']')).join('\n');
+    if (!confirm('以下のディスクを完全消去します。\nこの操作は取り消せません。\n\n' + lines + '\n\n本当に実行しますか？')) return;
+    if (!confirm('最終確認です。\n選択ディスクの全データが失われます。実行してよろしいですか？')) return;
+    document.getElementById('btn-exec').disabled = true;
+    document.getElementById('btn-stop').disabled = false;
+    try {
+        const res = await fetch('/api/wipe/start', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({targets: targets, method: mm.method, passes: mm.passes}),
+        });
+        const data = await res.json();
+        if (data.error) {
+            notify('エラー: ' + data.error, 'error');
+            document.getElementById('btn-exec').disabled = false;
+            document.getElementById('btn-stop').disabled = true;
+            return;
+        }
+        notify('消去を開始しました', 'success');
+        startPoll();
+    } catch (e) {
+        notify('通信エラー: ' + e.message, 'error');
+        document.getElementById('btn-exec').disabled = false;
+        document.getElementById('btn-stop').disabled = true;
+    }
+}
+
+async function stopWipe() {
+    if (!confirm('消去を中断しますか？\n（中断時点ですでに書き込まれた領域のデータは戻りません）')) return;
+    try {
+        await fetch('/api/wipe/stop', {method: 'POST'});
+        notify('中断要求を送信しました', 'success');
+    } catch (e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+function fmtEta(sec) {
+    if (sec == null || sec < 0) return '残り時間: 計算中';
+    if (sec < 60) return '残り約 ' + sec + ' 秒';
+    const m = Math.floor(sec / 60), s = sec % 60;
+    if (m < 60) return '残り約 ' + m + ' 分 ' + s + ' 秒';
+    const h = Math.floor(m / 60);
+    return '残り約 ' + h + ' 時間 ' + (m % 60) + ' 分';
+}
+
+function fmtSpeed(bps) {
+    if (!bps) return '';
+    return (bps / (1024 * 1024)).toFixed(1) + ' MB/s';
+}
+
+function startPoll() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(refreshStatus, 1000);
+    refreshStatus();
+}
+
+function setBadge(running) {
+    const b = document.getElementById('status-badge');
+    if (running) { b.textContent = '実行中'; b.className = 'status-badge status-running'; }
+    else { b.textContent = '待機中'; b.className = 'status-badge status-idle'; }
+}
+
+function renderJob(job) {
+    const prog = document.getElementById('prog');
+    prog.style.display = 'block';
+    prog.innerHTML = '';
+    job.targets.forEach(t => {
+        const item = document.createElement('div');
+        item.className = 'prog-item' + (t.status === 'done' ? ' done' : t.status === 'error' ? ' error' : '');
+        const pct = t.percent != null ? Number(t.percent).toFixed(1) : '0.0';
+        let sub = esc(t.method_detail || '') + ' ｜ ' + esc(t.message || '');
+        if (t.status === 'running' && t.is_ssd) {
+            sub += ' ｜ 経過表示のみ（進捗取得不可）';
+        } else if (t.status === 'running') {
+            sub += ' ｜ ' + fmtEta(t.eta_sec) + (t.speed_bps ? ' ｜ ' + fmtSpeed(t.speed_bps) : '');
+            if (t.pass_total > 1) sub += ' ｜ パス ' + t.pass_current + '/' + t.pass_total;
+        }
+        item.innerHTML =
+            '<div class="prog-head"><span><b>' + esc(t.path) + '</b> [' + esc(t.status) + ']</span><span>' + pct + ' %</span></div>' +
+            '<div class="prog-bar"><div class="prog-fill" style="width:' + pct + '%"></div></div>' +
+            '<div class="prog-sub">' + sub + '</div>';
+        prog.appendChild(item);
+    });
+}
+
+async function refreshStatus(silent) {
+    try {
+        const res = await fetch('/api/wipe/status');
+        const data = await res.json();
+        setBadge(data.running);
+        if (!data.job) return false;
+        seenJobId = data.job.id;
+        renderJob(data.job);
+        if (!data.running) {
+            clearInterval(pollTimer); pollTimer = null;
+            document.getElementById('btn-exec').disabled = false;
+            document.getElementById('btn-stop').disabled = true;
+            if (!silent) {
+                const allDone = data.job.targets.every(t => t.status === 'done');
+                notify(allDone ? 'すべての消去が完了しました' : 'ジョブが終了しました（詳細は各項目を確認）', allDone ? 'success' : 'error');
+            }
+        }
+        return data.running;
+    } catch (e) { return null; }
+}
+
+// 他端末で開始・終了したジョブを検出して同一表示にするための監視
+async function watchStatus() {
+    if (pollTimer) return;  // 自端末で実行・追跡中は何もしない
+    try {
+        const res = await fetch('/api/wipe/status');
+        const data = await res.json();
+        if (!data.job) return;
+        if (data.running) {
+            // 他端末で開始された実行中ジョブに接続する
+            seenJobId = data.job.id;
+            setBadge(true);
+            document.getElementById('btn-exec').disabled = true;
+            document.getElementById('btn-stop').disabled = false;
+            notify('実行中の消去ジョブに接続しました', 'success');
+            startPoll();
+        } else if (data.job.id !== seenJobId) {
+            // 他端末で終了したジョブの最終状態を表示する
+            seenJobId = data.job.id;
+            setBadge(false);
+            renderJob(data.job);
+        }
+    } catch (e) {}
+}
+
+async function init() {
+    await loadDevices();
+    // 開いた時点で実行中・終了済みのジョブがあれば同一表示にする
+    const running = await refreshStatus(true);
+    if (running) {
+        document.getElementById('btn-exec').disabled = true;
+        document.getElementById('btn-stop').disabled = false;
+        startPoll();
+    }
+    setInterval(watchStatus, 5000);
+}
+init();
+</script>
+</body>
+</html>

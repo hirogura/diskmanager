@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rsync ファイルコピー - Disk Manager v.0.0.1</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.header{background:#1e293b;padding:16px 24px;border-bottom:1px solid #334155;display:flex;align-items:center;gap:16px}
+.header h1{font-size:1.4em;color:#38bdf8}
+.header .version{color:#94a3b8;font-size:0.85em;font-weight:normal;padding-top:4px}
+.header-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+.btn-header{padding:6px 14px;border:none;border-radius:6px;background:#334155;color:#e2e8f0;font-size:0.82em;cursor:pointer;transition:all 0.2s}
+.btn-header:hover{background:#475569}
+.btn-header:disabled{opacity:0.5;cursor:not-allowed}
+.header .port{color:#64748b;font-size:0.85em}
+.main{max-width:1700px;margin:0 auto;padding:24px}
+.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:20px;margin-bottom:20px}
+.card h2{font-size:1.1em;color:#38bdf8;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card h2 .btn-header{margin-left:auto;font-size:0.78em;padding:5px 12px}
+.info{background:rgba(56,189,248,0.08);border:1px solid #0e7490;border-radius:8px;padding:12px 16px;margin-bottom:20px;color:#a5f3fc;font-size:0.88em;line-height:1.7}
+.warn{background:rgba(220,38,38,0.12);border:1px solid #dc2626;border-radius:8px;padding:12px 16px;margin-bottom:20px;color:#fca5a5;font-size:0.88em;line-height:1.7}
+.install-banner{background:rgba(234,179,8,0.1);border:1px solid #eab308;border-radius:8px;padding:14px 16px;margin-bottom:20px;color:#fde68a;font-size:0.9em;line-height:1.7;display:none}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;margin-bottom:6px;color:#94a3b8;font-size:0.9em}
+select,input[type=text]{width:100%;padding:10px;background:#0f172a;border:1px solid #475569;border-radius:6px;color:#e2e8f0;font-size:0.95em}
+select:focus,input:focus{outline:none;border-color:#38bdf8}
+.btn{padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:0.95em;font-weight:500;transition:all 0.2s}
+.btn-primary{background:#2563eb;color:#fff}.btn-primary:hover{background:#1d4ed8}
+.btn-danger{background:#dc2626;color:#fff}.btn-danger:hover{background:#b91c1c}
+.btn-secondary{background:#475569;color:#e2e8f0}.btn-secondary:hover{background:#64748b}
+.btn-info{background:#0891b2;color:#fff}.btn-info:hover{background:#0e7490}
+.btn-force{background:#7f1d1d;color:#fff}.btn-force:hover{background:#991b1b}
+.btn-warning{background:#b45309;color:#fff}.btn-warning:hover{background:#92400e}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.btn-group{display:flex;gap:10px;margin-top:16px;align-items:center;flex-wrap:wrap}
+.device-info{background:#1a2332;border:1px solid #2d4a5e;border-radius:6px;padding:12px;font-family:'Fira Code',monospace;font-size:0.8em;color:#7dd3fc;max-height:200px;overflow-y:auto;white-space:pre-wrap;margin-top:8px;line-height:1.5}
+.type-toggle{display:flex;gap:0;margin-bottom:10px;border:1px solid #475569;border-radius:6px;overflow:hidden;width:fit-content}
+.type-toggle button{padding:8px 16px;background:#0f172a;border:none;color:#94a3b8;cursor:pointer;font-size:0.85em;transition:all 0.2s}
+.type-toggle button.active{background:#2563eb;color:#fff}
+.type-toggle button:not(:last-child){border-right:1px solid #475569}
+.info-panel{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px}
+.side-section{margin-bottom:8px}
+.side-section h3{font-size:0.95em;color:#94a3b8;margin-bottom:8px}
+.help-text{font-size:0.8em;color:#64748b;margin-top:4px}
+.checkbox-row{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px}
+.checkbox-row label{display:flex;align-items:center;gap:6px;color:#e2e8f0;font-size:0.9em;cursor:pointer}
+.checkbox-row input[type=checkbox]{width:auto}
+.log-output{background:#000;border:1px solid #334155;border-radius:6px;padding:12px;font-family:'Fira Code',monospace;font-size:0.82em;color:#4ade80;max-height:400px;overflow-y:auto;white-space:pre-wrap;margin-top:10px;line-height:1.4}
+.status-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:0.8em;font-weight:bold}
+.status-running{background:rgba(34,197,94,0.2);color:#22c55e}
+.status-idle{background:rgba(100,116,139,0.2);color:#94a3b8}
+.prog{margin-top:6px}
+.prog-head{display:flex;justify-content:space-between;font-size:0.9em;margin-bottom:6px;gap:8px;flex-wrap:wrap}
+.prog-bar{height:14px;background:#334155;border-radius:7px;overflow:hidden}
+.prog-fill{height:100%;background:#2563eb;border-radius:7px;transition:width 0.8s;min-width:0}
+.prog.done .prog-fill{background:#16a34a}
+.prog.error .prog-fill{background:#dc2626}
+.prog-sub{font-size:0.82em;color:#94a3b8;margin-top:6px;line-height:1.7}
+.cmd-box{background:#0f172a;border:1px solid #475569;border-radius:6px;padding:12px;margin-top:12px;display:none}
+.cmd-box pre{margin:0;font-family:'Fira Code',monospace;font-size:0.85em;color:#4ade80;white-space:pre-wrap;word-break:break-all}
+.cmd-box .cmd-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.cmd-box .cmd-header span{color:#94a3b8;font-size:0.85em}
+.notify{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:6px;color:#fff;z-index:1000;animation:fadeIn 0.3s}
+.notify.success{background:#16a34a}.notify.error{background:#dc2626}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+.file-list{margin-top:10px;border:1px solid #334155;border-radius:6px;overflow:hidden}
+.file-list-header{display:flex;gap:10px;align-items:center;padding:10px 12px;background:#0f172a;border-bottom:1px solid #334155;flex-wrap:wrap}
+.file-list-header .count{color:#94a3b8;font-size:0.85em}
+.file-row{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid #1e293b;font-size:0.9em}
+.file-row:last-child{border-bottom:none}
+.file-row:hover{background:#1a2332}
+.file-row input[type=checkbox]{width:16px;height:16px;flex-shrink:0}
+.file-row .name{flex:1;word-break:break-all}
+.file-row .meta{color:#94a3b8;font-size:0.82em;white-space:nowrap}
+.file-row .tag{font-size:0.75em;padding:2px 8px;border-radius:10px;background:#334155;color:#cbd5e1;flex-shrink:0}
+.file-row .tag.dir{background:#166534;color:#bbf7d0}
+.file-row .tag.link{background:#713f12;color:#fde68a}
+.mount-ok{color:#4ade80;font-size:0.85em;margin-top:6px}
+.mount-ng{color:#f87171;font-size:0.85em;margin-top:6px}
+.inline-row{display:flex;gap:8px;margin-top:8px}
+.inline-row .btn{padding:8px 14px;font-size:0.85em}
+</style>
+<link rel="stylesheet" href="/pane.css">
+<script src="/pane.js"></script>
+</head>
+<body>
+<div class="header">
+    <h1>rsync ファイルコピー</h1>
+            <div class="header-actions">
+        <button class="btn-header pane-back" onclick="location.href='/'">レスキューに戻る</button>
+        <button class="btn-header" onclick="location.reload()">リフレッシュ</button>
+    </div>
+    <span id="status-badge" class="status-badge status-idle">待機中</span>
+</div>
+<div class="main">
+    <div class="info">
+        ドライブや ddrescue のイメージファイル（.img）から、フォルダ・ファイルを選んでコピーするためのページです。<br>
+        ① コピー元・コピー先のドライブを選ぶと自動でマウントされます（コピー元は読み取り専用）。<br>
+        ② フォルダを指定すると、その直下の一覧が表示されます。チェックを入れたものだけコピーします。<br>
+        ③ コピー先フォルダは存在しない場合に自動作成されます。
+    </div>
+
+    <div class="install-banner" id="install-banner">
+        <span id="install-msg">rsync がインストールされていません。</span>
+        <div class="btn-group">
+            <button class="btn btn-warning" id="btn-install" onclick="doInstall()">rsync をインストール</button>
+        </div>
+    </div>
+
+    <div class="warn">
+        <strong>注意：</strong>コピー元・コピー先を間違えないよう、サイズ・モデル・シリアル番号を必ず確認してください。
+        コピー先に同名のファイルがある場合は上書きされます（-u 指定時はコピー元より新しい場合のみ）。
+        <span id="sysdisk-note"></span>
+    </div>
+
+    <div class="card">
+        <h2>ドライブ設定
+            <button class="btn-header" onclick="loadPartitions()">一覧を更新</button>
+        </h2>
+        <div class="info-panel">
+            <div class="side-section">
+                <h3>コピー元</h3>
+                <div class="type-toggle" id="src-toggle">
+                    <button class="active" onclick="setSrcType('disk',this)">物理ドライブ</button>
+                    <button onclick="setSrcType('image',this)">イメージファイル(.img)</button>
+                </div>
+                <div id="src-disk-wrap">
+                    <select id="source" onchange="mountSrcDevice()">
+                        <option value="">-- パーティションを選択 --</option>
+                    </select>
+                </div>
+                <div id="src-img-wrap" style="display:none">
+                    <input type="text" id="source-img" placeholder="/path/to/image.img">
+                    <div class="help-text">ddrescue で作成した .img 等のRAWイメージを指定してください</div>
+                    <div class="inline-row">
+                        <button class="btn btn-secondary" onclick="mountSrcImage()">マウント</button>
+                    </div>
+                    <select id="src-img-part" style="display:none;margin-top:8px" onchange="onImgPartChange()"></select>
+                </div>
+                <div class="device-info" id="source-info">ドライブを選択してください</div>
+                <div id="src-mount-msg"></div>
+                <div class="inline-row">
+                    <button class="btn btn-secondary" onclick="unmountSide('src')">マウント解除</button>
+                </div>
+            </div>
+            <div class="side-section">
+                <h3>コピー先</h3>
+                <div class="type-toggle" id="dst-toggle">
+                    <button class="active" type="button" style="cursor:default">物理ドライブ</button>
+                </div>
+                <select id="dest" onchange="mountDstDevice()">
+                    <option value="">-- パーティションを選択 --</option>
+                </select>
+                <div class="device-info" id="dest-info">ドライブを選択してください</div>
+                <div id="dst-mount-msg"></div>
+                <div class="inline-row">
+                    <button class="btn btn-secondary" onclick="unmountSide('dst')">マウント解除</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>フォルダ指定</h2>
+        <div class="info-panel">
+            <div class="side-section">
+                <h3>コピー元フォルダ</h3>
+                <input type="text" id="src-base" placeholder="/mnt/diskmanager-rsync/src/...">
+                <div class="help-text">マウント後に自動入力されます。サブフォルダまで指定可能です</div>
+                <div class="inline-row">
+                    <button class="btn btn-info" onclick="loadList()">一覧表示</button>
+                </div>
+            </div>
+            <div class="side-section">
+                <h3>コピー先フォルダ</h3>
+                <input type="text" id="dst-base" placeholder="/mnt/diskmanager-rsync/dst/...">
+                <div class="help-text">存在しない場合は自動作成されます（マウント内に限る）</div>
+                <div class="inline-row">
+                    <button class="btn btn-info" onclick="loadDstList()">一覧表示</button>
+                    <button class="btn btn-secondary" onclick="mkdirDst()">フォルダ作成</button>
+                </div>
+                <div id="dst-exist-msg"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>フォルダ・ファイルの確認</h2>
+        <div class="info-panel" style="margin-top:0">
+            <div class="side-section">
+                <h3>コピーするフォルダ・ファイルの選択</h3>
+                <div class="file-list-header">
+                    <button class="btn btn-secondary" style="padding:6px 14px;font-size:0.85em" onclick="checkAll(true)">全チェック</button>
+                    <button class="btn btn-secondary" style="padding:6px 14px;font-size:0.85em" onclick="checkAll(false)">全Off</button>
+                    <button class="btn btn-info" style="padding:6px 14px;font-size:0.85em" onclick="loadList()">更新</button>
+                    <span class="count" id="file-count"></span>
+                </div>
+                <div class="file-list" id="file-list">
+                    <div class="file-row"><span class="name" style="color:#64748b">コピー元フォルダを指定して「一覧表示」を押してください</span></div>
+                </div>
+            </div>
+            <div class="side-section">
+                <h3>コピー先フォルダの確認</h3>
+                <div class="file-list-header">
+                    <button class="btn btn-info" style="padding:6px 14px;font-size:0.85em" onclick="loadDstList()">更新</button>
+                    <span class="count" id="dst-file-count"></span>
+                </div>
+                <div class="file-list" id="dst-file-list">
+                    <div class="file-row"><span class="name" style="color:#64748b">コピー先フォルダを指定して「一覧表示」を押してください</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>オプション</h2>
+        <div class="checkbox-row">
+            <label><input type="checkbox" id="opt-recursive" checked> -r サブディレクトリ再帰</label>
+            <label><input type="checkbox" id="opt-timestamps" checked> -t タイムスタンプ維持</label>
+            <label><input type="checkbox" id="opt-update" checked> -u 転送元より新しいファイルのみ転送</label>
+        </div>
+        <div class="help-text">進捗表示（--info=progress2）と詳細出力（-v）は常に有効です。</div>
+    </div>
+
+    <div class="card">
+        <h2>実行</h2>
+        <div class="btn-group">
+            <button class="btn btn-info" id="btn-show-cmd" onclick="toggleCmdBox()">実行コマンドを表示</button>
+            <button class="btn btn-primary" id="btn-start" onclick="startCopy()">コピー開始</button>
+            <button class="btn btn-danger" id="btn-stop" onclick="stopCopy()" disabled>中断</button>
+            <button class="btn btn-force" id="btn-force-stop" onclick="forceStopCopy()" disabled>強制停止</button>
+        </div>
+        <div class="cmd-box" id="cmd-box">
+            <div class="cmd-header">
+                <span>実行コマンド（参考表示。実際はサーバー側で実行）</span>
+                <button class="btn btn-secondary" onclick="copyCmd()" style="padding:6px 14px;font-size:0.85em">コピー</button>
+            </div>
+            <pre id="cmd-text"></pre>
+        </div>
+    </div>
+
+    <div class="card" id="prog-card" style="display:none">
+        <h2>進捗</h2>
+        <div class="prog" id="prog">
+            <div class="prog-head"><span id="prog-label">準備中...</span><span id="prog-pct">0.0 %</span></div>
+            <div class="prog-bar"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
+            <div class="prog-sub" id="prog-sub"></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>出力</h2>
+        <div class="log-output" id="log-output">待機中...</div>
+    </div>
+</div>
+
+<script>
+let logStream = null;
+let srcType = 'disk';
+let rsyncInstalled = false;
+let srcMount = '';
+let dstMount = '';
+
+function notify(msg, type) {
+    const el = document.createElement('div');
+    el.className = 'notify ' + type;
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3500);
+}
+
+function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function setSrcType(type, btn) {
+    const toggle = btn.parentElement;
+    toggle.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    srcType = type;
+    document.getElementById('src-disk-wrap').style.display = type === 'disk' ? '' : 'none';
+    document.getElementById('src-img-wrap').style.display = type === 'image' ? '' : 'none';
+    document.getElementById('source-info').textContent = type === 'disk' ? 'ドライブを選択してください' : 'イメージファイルを指定して「マウント」を押してください';
+}
+
+async function checkInstall() {
+    try {
+        const res = await fetch('/api/rsync/check');
+        const st = await res.json();
+        rsyncInstalled = !!st.installed;
+        const banner = document.getElementById('install-banner');
+        if (!st.installed) {
+            banner.style.display = 'block';
+            document.getElementById('install-msg').textContent =
+                st.installing ? 'rsync をインストール中です。完了までお待ちください…'
+                              : 'rsync がインストールされていません。下のボタンで導入できます。';
+            document.getElementById('btn-install').disabled = !!st.installing;
+            document.getElementById('btn-install').textContent = st.installing ? 'インストール中...' : 'rsync をインストール';
+            document.getElementById('btn-start').disabled = true;
+            if (st.installing) setTimeout(checkInstall, 3000);
+        } else {
+            banner.style.display = 'none';
+        }
+        return st;
+    } catch(e) { return null; }
+}
+
+async function doInstall() {
+    if (!confirm('rsync をインストールしますか？\n（パッケージマネージャで自動導入します）')) return;
+    document.getElementById('btn-install').disabled = true;
+    document.getElementById('btn-install').textContent = 'インストール中...';
+    try {
+        const res = await fetch('/api/rsync/install', {method: 'POST'});
+        const data = await res.json();
+        if (data.error) { notify('エラー: ' + data.error, 'error'); await checkInstall(); return; }
+        if (data.already) { notify('すでにインストール済みです', 'success'); await checkInstall(); return; }
+        notify('インストールを開始しました', 'success');
+        pollInstall();
+    } catch(e) { notify('通信エラー: ' + e.message, 'error'); await checkInstall(); }
+}
+
+async function pollInstall() {
+    for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        const st = await checkInstall();
+        if (st && st.installed) {
+            notify('インストールが完了しました', 'success');
+            await checkStatus();
+            return;
+        }
+    }
+    notify('タイムアウトしました。手動で再読込してください', 'error');
+}
+
+async function loadPartitions() {
+    const keep = {
+        source: document.getElementById('source').value,
+        dest: document.getElementById('dest').value,
+    };
+    try {
+        const res = await fetch('/api/rsync/partitions');
+        const data = await res.json();
+        const parts = data.partitions || [];
+        if (data.system_disk) {
+            document.getElementById('sysdisk-note').textContent =
+                'システムドライブ（' + data.system_disk + '）はコピー先に指定できません。';
+        }
+        [['source', keep.source], ['dest', keep.dest]].forEach(([id, cur]) => {
+            const sel = document.getElementById(id);
+            sel.innerHTML = '<option value="">-- パーティションを選択 --</option>';
+            parts.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.path;
+                opt.textContent = p.label;
+                if (id === 'dest' && p.is_system) opt.disabled = true;
+                sel.appendChild(opt);
+            });
+            if (cur && Array.from(sel.options).some(o => o.value === cur)) {
+                sel.value = cur;
+                showPartInfo(id);
+            }
+        });
+        if (!parts.length) notify('マウント可能なパーティションがありません', 'error');
+    } catch(e) { notify('パーティション一覧の取得に失敗しました', 'error'); }
+}
+
+async function showPartInfo(which) {
+    const sel = document.getElementById(which);
+    const infoEl = document.getElementById(which + '-info');
+    if (!sel.value) { infoEl.textContent = 'ドライブを選択してください'; return; }
+    infoEl.textContent = '読み込み中...';
+    try {
+        const res = await fetch('/api/device-info?path=' + encodeURIComponent(sel.value));
+        const info = await res.json();
+        let text = '';
+        if (info.lsblk) text += info.lsblk + '\n';
+        if (info.blkid) text += '\n' + info.blkid + '\n';
+        if (info.file_type) text += '\n' + info.file_type;
+        infoEl.textContent = text || '情報なし';
+    } catch(e) { infoEl.textContent = '取得エラー'; }
+}
+
+function setMountMsg(side, ok, text) {
+    const el = document.getElementById(side === 'src' ? 'src-mount-msg' : 'dst-mount-msg');
+    el.className = ok ? 'mount-ok' : 'mount-ng';
+    el.textContent = text;
+}
+
+async function postMount(side, path, force) {
+    const res = await fetch('/api/rsync/mount', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({side, path, force: !!force}),
+    });
+    return res.json();
+}
+
+async function handleNeedForce(side, path, data) {
+    const detail = data.detail ? '\n理由: ' + data.detail : '';
+    const note = data.force_note ? '\n' + data.force_note : '';
+    const mode = side === 'src'
+        ? 'コピー元は読み取り専用(ro,force)で載せます。'
+        : 'コピー先は書き込み可(rw,force)で載せます。';
+    const msg = 'NTFSがダーティ（要chkdsk）のため通常マウントできません。' + detail + note +
+        '\n' + mode +
+        '\nntfsfixでダーティフラグを削除して強制マウントしますか？' +
+        '\n※ディスクへの書き込みが発生します。本来はWindowsで chkdsk /f が推奨です。';
+    if (!confirm(msg)) return null;
+    return postMount(side, path, true);
+}
+
+async function mountSrcDevice() {
+    const sel = document.getElementById('source');
+    showPartInfo('source');
+    if (!sel.value) return;
+    setMountMsg('src', true, 'マウント中...');
+    try {
+        let data = await postMount('src', sel.value, false);
+        if (!data.ok && data.need_force) {
+            const retried = await handleNeedForce('src', sel.value, data);
+            if (retried) data = retried;
+            else { setMountMsg('src', false, 'エラー: ' + (data.error || 'マウント失敗')); return; }
+        }
+        if (!data.ok) { setMountMsg('src', false, 'エラー: ' + (data.error || 'マウント失敗')); notify('エラー: ' + (data.error || 'マウント失敗'), 'error'); return; }
+        srcMount = data.mountpoint;
+        setMountMsg('src', true, 'マウント: ' + data.mountpoint + (data.already_mounted ? '（マウント済みを再利用）' : '') + (data.forced ? '（NTFS強制マウント）' : ''));
+        document.getElementById('src-base').value = data.mountpoint;
+        const imgSel = document.getElementById('src-img-part');
+        imgSel.style.display = 'none';
+        imgSel.innerHTML = '';
+        notify('コピー元をマウントしました', 'success');
+        await loadList();
+    } catch(e) { setMountMsg('src', false, '通信エラー: ' + e.message); }
+}
+
+async function mountSrcImage() {
+    const img = document.getElementById('source-img').value.trim();
+    if (!img) { notify('イメージファイルを指定してください', 'error'); return; }
+    setMountMsg('src', true, 'マウント中...');
+    document.getElementById('source-info').textContent = 'マウント中...';
+    try {
+        const res = await fetch('/api/rsync/mount-image', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({image: img}),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+            setMountMsg('src', false, 'エラー: ' + (data.error || 'マウント失敗'));
+            document.getElementById('source-info').textContent = data.error || 'マウント失敗';
+            notify('エラー: ' + (data.error || 'マウント失敗'), 'error');
+            return;
+        }
+        const mounts = data.mounts || [];
+        document.getElementById('source-info').textContent =
+            'イメージ: ' + img + '\nloop: ' + (data.loop || '') + '\n' +
+            mounts.map(m => m.dev + ' → ' + m.mountpoint + (m.fstype ? ' [' + m.fstype + ']' : '')).join('\n');
+        const imgSel = document.getElementById('src-img-part');
+        if (mounts.length > 1) {
+            imgSel.style.display = '';
+            imgSel.innerHTML = '';
+            mounts.forEach((m, i) => {
+                const opt = document.createElement('option');
+                opt.value = m.mountpoint;
+                opt.textContent = m.dev + ' → ' + m.mountpoint + (m.fstype ? ' [' + m.fstype + ']' : '');
+                imgSel.appendChild(opt);
+            });
+        } else {
+            imgSel.style.display = 'none';
+            imgSel.innerHTML = '';
+        }
+        srcMount = data.mountpoint;
+        setMountMsg('src', true, 'マウント: ' + data.mountpoint + '（' + mounts.length + ' パーティション）');
+        document.getElementById('src-base').value = data.mountpoint;
+        notify('イメージをマウントしました', 'success');
+        await loadList();
+    } catch(e) {
+        setMountMsg('src', false, '通信エラー: ' + e.message);
+        document.getElementById('source-info').textContent = '取得エラー';
+    }
+}
+
+function onImgPartChange() {
+    const sel = document.getElementById('src-img-part');
+    if (sel.value) {
+        srcMount = sel.value;
+        document.getElementById('src-base').value = sel.value;
+        loadList();
+    }
+}
+
+async function mountDstDevice() {
+    const sel = document.getElementById('dest');
+    showPartInfo('dest');
+    if (!sel.value) return;
+    setMountMsg('dst', true, 'マウント中...');
+    try {
+        let data = await postMount('dst', sel.value, false);
+        if (!data.ok && data.need_force) {
+            const retried = await handleNeedForce('dst', sel.value, data);
+            if (retried) data = retried;
+            else { setMountMsg('dst', false, 'エラー: ' + (data.error || 'マウント失敗')); return; }
+        }
+        if (!data.ok) { setMountMsg('dst', false, 'エラー: ' + (data.error || 'マウント失敗')); notify('エラー: ' + (data.error || 'マウント失敗'), 'error'); return; }
+        dstMount = data.mountpoint;
+        setMountMsg('dst', true, 'マウント: ' + data.mountpoint + (data.already_mounted ? '（マウント済みを再利用）' : '') + (data.forced ? '（NTFS強制マウント）' : ''));
+        if (!document.getElementById('dst-base').value) {
+            document.getElementById('dst-base').value = data.mountpoint;
+        }
+        notify('コピー先をマウントしました', 'success');
+        checkDstExists();
+    } catch(e) { setMountMsg('dst', false, '通信エラー: ' + e.message); }
+}
+
+async function unmountSide(side) {
+    if (!confirm((side === 'src' ? 'コピー元' : 'コピー先') + 'をアンマウントしますか？')) return;
+    try {
+        const res = await fetch('/api/rsync/unmount', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({side}),
+        });
+        const data = await res.json();
+        if (!data.ok) { notify('エラー: ' + (data.error || 'アンマウント失敗'), 'error'); return; }
+        setMountMsg(side, true, 'アンマウントしました');
+        notify('アンマウントしました', 'success');
+        await refreshMounts();
+    } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function refreshMounts() {
+    try {
+        const res = await fetch('/api/rsync/mounts');
+        const data = await res.json();
+        if (data.src && data.src.mountpoint) {
+            srcMount = data.src.mountpoint;
+            setMountMsg('src', true, 'マウント: ' + data.src.mountpoint);
+            if (!document.getElementById('src-base').value) {
+                document.getElementById('src-base').value = data.src.mountpoint;
+            }
+        }
+        if (data.dst && data.dst.mountpoint) {
+            dstMount = data.dst.mountpoint;
+            setMountMsg('dst', true, 'マウント: ' + data.dst.mountpoint);
+            if (!document.getElementById('dst-base').value) {
+                document.getElementById('dst-base').value = data.dst.mountpoint;
+            }
+        }
+    } catch(e) {}
+}
+
+async function checkDstExists() {
+    const el = document.getElementById('dst-exist-msg');
+    const path = document.getElementById('dst-base').value.trim();
+    if (!path) { el.textContent = ''; return; }
+    try {
+        const res = await fetch('/api/rsync/list?side=dst&base=' + encodeURIComponent(path));
+        const data = await res.json();
+        if (data.ok) {
+            el.className = 'mount-ok';
+            el.textContent = '存在するフォルダです（' + data.count + ' 件）';
+        } else {
+            el.className = 'help-text';
+            el.textContent = '存在しないためコピー開始時に自動作成されます';
+        }
+    } catch(e) {}
+}
+
+async function mkdirDst() {
+    const path = document.getElementById('dst-base').value.trim();
+    if (!path) { notify('コピー先フォルダを入力してください', 'error'); return; }
+    try {
+        const res = await fetch('/api/rsync/mkdir', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({side: 'dst', path}),
+        });
+        const data = await res.json();
+        if (!data.ok) { notify('エラー: ' + (data.error || '作成失敗'), 'error'); return; }
+        notify('フォルダを作成しました', 'success');
+        checkDstExists();
+    } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function loadList() {
+    const base = document.getElementById('src-base').value.trim();
+    const listEl = document.getElementById('file-list');
+    if (!base) { notify('コピー元フォルダを指定してください', 'error'); return; }
+    listEl.innerHTML = '<div class="file-row"><span class="name" style="color:#64748b">読み込み中...</span></div>';
+    try {
+        const res = await fetch('/api/rsync/list?side=src&base=' + encodeURIComponent(base));
+        const data = await res.json();
+        if (!data.ok) {
+            listEl.innerHTML = '<div class="file-row"><span class="name" style="color:#f87171">' + esc(data.error || '取得失敗') + '</span></div>';
+            document.getElementById('file-count').textContent = '';
+            notify('エラー: ' + (data.error || '取得失敗'), 'error');
+            return;
+        }
+        const entries = data.entries || [];
+        document.getElementById('file-count').textContent =
+            entries.length + ' 件' + (data.truncated ? '（上限2000件まで表示）' : '');
+        if (!entries.length) {
+            listEl.innerHTML = '<div class="file-row"><span class="name" style="color:#64748b">フォルダ内は空です</span></div>';
+            return;
+        }
+        listEl.innerHTML = '';
+        entries.forEach(e => {
+            const row = document.createElement('div');
+            row.className = 'file-row';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = true;
+            cb.value = e.name;
+            cb.className = 'file-check';
+            const tag = document.createElement('span');
+            tag.className = 'tag' + (e.type === 'dir' ? ' dir' : (e.type === 'link' ? ' link' : ''));
+            tag.textContent = e.type === 'dir' ? 'フォルダ' : (e.type === 'file' ? 'ファイル' : e.type);
+            const name = document.createElement('span');
+            name.className = 'name';
+            name.textContent = e.name;
+            const meta = document.createElement('span');
+            meta.className = 'meta';
+            meta.textContent = (e.type === 'dir' ? '' : e.size_h + ' ｜ ') + (e.mtime || '');
+            row.appendChild(cb);
+            row.appendChild(tag);
+            row.appendChild(name);
+            row.appendChild(meta);
+            row.addEventListener('click', ev => {
+                if (ev.target !== cb) cb.checked = !cb.checked;
+            });
+            listEl.appendChild(row);
+        });
+    } catch(e) {
+        listEl.innerHTML = '<div class="file-row"><span class="name" style="color:#f87171">通信エラー</span></div>';
+    }
+}
+
+async function loadDstList() {
+    const base = document.getElementById('dst-base').value.trim();
+    const listEl = document.getElementById('dst-file-list');
+    if (!base) { notify('コピー先フォルダを指定してください', 'error'); return; }
+    listEl.innerHTML = '<div class="file-row"><span class="name" style="color:#64748b">読み込み中...</span></div>';
+    try {
+        const res = await fetch('/api/rsync/list?side=dst&base=' + encodeURIComponent(base));
+        const data = await res.json();
+        if (!data.ok) {
+            listEl.innerHTML = '<div class="file-row"><span class="name" style="color:#f87171">' + esc(data.error || '取得失敗') + '</span></div>';
+            document.getElementById('dst-file-count').textContent = '';
+            notify('エラー: ' + (data.error || '取得失敗'), 'error');
+            return;
+        }
+        const entries = data.entries || [];
+        document.getElementById('dst-file-count').textContent =
+            entries.length + ' 件' + (data.truncated ? '（上限2000件まで表示）' : '');
+        if (!entries.length) {
+            listEl.innerHTML = '<div class="file-row"><span class="name" style="color:#64748b">フォルダ内は空です</span></div>';
+            return;
+        }
+        listEl.innerHTML = '';
+        entries.forEach(e => {
+            const row = document.createElement('div');
+            row.className = 'file-row';
+            const tag = document.createElement('span');
+            tag.className = 'tag' + (e.type === 'dir' ? ' dir' : (e.type === 'link' ? ' link' : ''));
+            tag.textContent = e.type === 'dir' ? 'フォルダ' : (e.type === 'file' ? 'ファイル' : e.type);
+            const name = document.createElement('span');
+            name.className = 'name';
+            name.textContent = e.name;
+            const meta = document.createElement('span');
+            meta.className = 'meta';
+            meta.textContent = (e.type === 'dir' ? '' : e.size_h + ' ｜ ') + (e.mtime || '');
+            row.appendChild(tag);
+            row.appendChild(name);
+            row.appendChild(meta);
+            listEl.appendChild(row);
+        });
+    } catch(e) {
+        listEl.innerHTML = '<div class="file-row"><span class="name" style="color:#f87171">通信エラー</span></div>';
+    }
+}
+
+function checkAll(on) {
+    document.querySelectorAll('.file-check').forEach(cb => { cb.checked = on; });
+}
+
+function selectedItems() {
+    return Array.from(document.querySelectorAll('.file-check'))
+        .filter(cb => cb.checked)
+        .map(cb => cb.value);
+}
+
+function buildCmd() {
+    const src = document.getElementById('src-base').value.trim() || '(src)';
+    const dst = document.getElementById('dst-base').value.trim() || '(dst)';
+    const parts = ['sudo', 'rsync', '-v', '-h', '--info=progress2', '--stats'];
+    if (document.getElementById('opt-recursive').checked) parts.push('-r');
+    if (document.getElementById('opt-timestamps').checked) parts.push('-t');
+    if (document.getElementById('opt-update').checked) parts.push('-u');
+    const items = selectedItems();
+    const shown = items.length ? items.slice(0, 5).map(s => src + '/' + s) : [src + '/(選択項目)'];
+    if (items.length > 5) shown.push('... 他' + (items.length - 5) + '件');
+    return parts.join(' ') + ' ' + shown.join(' ') + ' ' + dst;
+}
+
+function toggleCmdBox() {
+    const box = document.getElementById('cmd-box');
+    if (box.style.display === 'none' || !box.style.display) {
+        document.getElementById('cmd-text').textContent = buildCmd();
+        box.style.display = 'block';
+        document.getElementById('btn-show-cmd').textContent = '実行コマンドを隠す';
+    } else {
+        box.style.display = 'none';
+        document.getElementById('btn-show-cmd').textContent = '実行コマンドを表示';
+    }
+}
+
+function copyCmd() {
+    const text = document.getElementById('cmd-text').textContent;
+    navigator.clipboard.writeText(text).then(() => notify('コピーしました', 'success'));
+}
+
+async function startCopy() {
+    const srcBase = document.getElementById('src-base').value.trim();
+    const dstBase = document.getElementById('dst-base').value.trim();
+    if (!srcBase) { notify('コピー元フォルダを指定してください', 'error'); return; }
+    if (!dstBase) { notify('コピー先フォルダを指定してください', 'error'); return; }
+    const items = selectedItems();
+    if (!items.length) { notify('コピーするフォルダ・ファイルを1つ以上選択してください', 'error'); return; }
+    if (!confirm(items.length + ' 件をコピーしますか？\nコピー元: ' + srcBase + '\nコピー先: ' + dstBase)) return;
+    const options = {
+        recursive: document.getElementById('opt-recursive').checked,
+        timestamps: document.getElementById('opt-timestamps').checked,
+        update: document.getElementById('opt-update').checked,
+    };
+    try {
+        const res = await fetch('/api/rsync/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({src_base: srcBase, dst_base: dstBase, items, options}),
+        });
+        const data = await res.json();
+        if (data.error) { notify('エラー: ' + data.error, 'error'); return; }
+        notify('コピーを開始しました' + (data.created_dst ? '（コピー先フォルダを作成しました）' : ''), 'success');
+        updateStatus(true);
+        startLogStream(data.log_file);
+        startProgPoll();
+    } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function stopCopy() {
+    if (!confirm('コピーを中断しますか？')) return;
+    try {
+        await fetch('/api/rsync/stop', {method: 'POST'});
+        notify('中断しました', 'success');
+        suppressDoneNotify = true;
+        updateStatus(false);
+        refreshProgress();
+    } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function forceStopCopy() {
+    if (!confirm('強制停止しますか？（SIGKILLで即時終了）')) return;
+    try {
+        await fetch('/api/force-stop', {method: 'POST'});
+        notify('強制停止しました', 'success');
+        suppressDoneNotify = true;
+        updateStatus(false);
+        refreshProgress();
+    } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+function updateStatus(running) {
+    const badge = document.getElementById('status-badge');
+    if (running) {
+        badge.textContent = '実行中'; badge.className = 'status-badge status-running';
+        document.getElementById('btn-start').disabled = true;
+        document.getElementById('btn-stop').disabled = false;
+        document.getElementById('btn-force-stop').disabled = false;
+    } else {
+        badge.textContent = '待機中'; badge.className = 'status-badge status-idle';
+        document.getElementById('btn-start').disabled = !rsyncInstalled;
+        document.getElementById('btn-stop').disabled = true;
+        document.getElementById('btn-force-stop').disabled = true;
+    }
+}
+
+let currentStreamLog = '';
+let liveCompleted = '';
+let liveCurrent = '';
+let cursorCol = 0;
+function startLogStream(logName) {
+    if (logStream) logStream.close();
+    currentStreamLog = logName;
+    liveCompleted = '';
+    liveCurrent = '';
+    cursorCol = 0;
+    const output = document.getElementById('log-output');
+    output.textContent = '';
+    logStream = new EventSource('/api/log-stream?name=' + encodeURIComponent(logName));
+    logStream.onmessage = function(e) {
+        var raw = e.data.replace(/\\\\/g, '\u0000').replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\u0000/g, '\\');
+        var text = raw.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+        for (var i = 0; i < text.length; i++) {
+            var ch = text[i];
+            if (ch === '\r') { cursorCol = 0; }
+            else if (ch === '\n') { liveCompleted += liveCurrent + '\n'; liveCurrent = ''; cursorCol = 0; }
+            else {
+                if (cursorCol < liveCurrent.length) {
+                    liveCurrent = liveCurrent.substring(0, cursorCol) + ch + liveCurrent.substring(cursorCol + 1);
+                } else { liveCurrent += ch; }
+                cursorCol++;
+            }
+        }
+        output.textContent = liveCompleted + liveCurrent;
+        output.scrollTop = output.scrollHeight;
+    };
+    logStream.onerror = function() { logStream.close(); logStream = null; checkStatus(); };
+}
+
+let progTimer = null;
+let progDoneNotified = false;
+let suppressDoneNotify = false;
+
+function fmtElapsed(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    if (h > 0) return h + '時間' + m + '分';
+    if (m > 0) return m + '分' + s + '秒';
+    return s + '秒';
+}
+
+function startProgPoll() {
+    progDoneNotified = false;
+    suppressDoneNotify = false;
+    document.getElementById('prog-card').style.display = 'block';
+    document.getElementById('prog').classList.remove('done', 'error');
+    document.getElementById('prog-fill').style.width = '0%';
+    document.getElementById('prog-pct').textContent = '0.0 %';
+    document.getElementById('prog-label').textContent = '準備中...';
+    document.getElementById('prog-sub').textContent = '';
+    if (progTimer) clearInterval(progTimer);
+    progTimer = setInterval(refreshProgress, 2000);
+    refreshProgress();
+}
+
+function stopProgPoll() {
+    if (progTimer) { clearInterval(progTimer); progTimer = null; }
+}
+
+async function refreshProgress() {
+    try {
+        const res = await fetch('/api/rsync/progress');
+        if (!res.ok) {
+            stopProgPoll();
+            document.getElementById('prog-label').textContent = '進捗取得不可';
+            document.getElementById('prog-sub').textContent =
+                '進捗表示にはサーバー側の更新が必要です。「レスキューに戻る」→「再起動」で Disk Manager を再起動してください。';
+            return;
+        }
+        const p = await res.json();
+        if (!p.job) {
+            stopProgPoll();
+            if (document.getElementById('prog-pct').textContent === '0.0 %') {
+                document.getElementById('prog-label').textContent = '進捗情報なし';
+                document.getElementById('prog-sub').textContent =
+                    '進捗情報を取得できませんでした。開始直後の場合は「コピー開始」を押し直すか、出力ログで確認してください。';
+            }
+            return;
+        }
+        renderProgress(p);
+        if (!p.running) {
+            stopProgPoll();
+            if (!progDoneNotified && !suppressDoneNotify) {
+                progDoneNotified = true;
+                if (p.status === 'done') notify('コピーが完了しました', 'success');
+                else if (p.status === 'stopped') notify('コピーは中断されました', 'error');
+                else if (p.status === 'unknown') notify('コピーは終了しました（結果不明のため出力ログを確認してください）', 'error');
+                else notify('コピーが異常終了しました（出力ログを確認してください）', 'error');
+            }
+        }
+    } catch(e) {}
+}
+
+function renderProgress(p) {
+    const pct = Math.min(100, Number(p.percent || 0));
+    document.getElementById('prog-pct').textContent = pct.toFixed(1) + ' %';
+    document.getElementById('prog-fill').style.width = pct + '%';
+    const box = document.getElementById('prog');
+    box.classList.remove('done', 'error');
+    let label = '実行中... ' + pct.toFixed(1) + ' %';
+    if (p.percent_basis && p.percent_basis !== 'progress2' && p.running) {
+        label += p.percent_basis === 'file-count' ? '（ファイル数から推定）' : '（容量から推定）';
+    }
+    if (p.adopted && p.running) label += '（サーバー再起動後に引き継ぎ）';
+    if (!p.running) {
+        if (p.status === 'done') { label = '完了'; box.classList.add('done'); }
+        else if (p.status === 'stopped') { label = '中断'; box.classList.add('error'); }
+        else if (p.status === 'unknown') { label = '終了（結果不明）'; box.classList.add('error'); }
+        else { label = '異常終了'; box.classList.add('error'); }
+    }
+    document.getElementById('prog-label').textContent = label;
+    let sub = '';
+    if (p.transferred_h && p.total_h) sub += p.transferred_h + ' / ' + p.total_h;
+    else if (p.total_h) sub += '合計 ' + p.total_h;
+    else if (p.transferred_h) sub += '転送済み ' + p.transferred_h;
+    if (p.speed) sub += (sub ? ' ｜ ' : '') + '速度 ' + p.speed;
+    if (p.to_check) sub += (sub ? ' ｜ ' : '') + '残り ' + p.to_check;
+    if (p.transferred_files) sub += (sub ? ' ｜ ' : '') + '転送ファイル数 ' + p.transferred_files;
+    if (p.total_files) sub += (sub ? ' ｜ ' : '') + '対象ファイル数 約' + p.total_files;
+    sub += (sub ? ' ｜ ' : '') + '経過 ' + fmtElapsed(p.elapsed_sec);
+    if (p.eta_text) sub += ' ｜ ' + p.eta_text + '（参考値）';
+    if (p.job && p.job.items) sub += ' ｜ 選択 ' + p.job.items.length + ' 件';
+    if (p.phase) sub += '\n状況: ' + p.phase;
+    document.getElementById('prog-sub').textContent = sub;
+}
+
+async function checkStatus() {
+    try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        const busy = !!(data.running || data.clone_running);
+        updateStatus(busy);
+        if (data.version) {
+            document.title = document.title.replace(/v\.[0-9.]+/, 'v.' + data.version);
+        }
+        if (data.running && !logStream && data.log_file) {
+            startLogStream(data.log_file.split('/').pop());
+        }
+        if (busy && !progTimer) {
+            try {
+                const pr = await (await fetch('/api/rsync/progress')).json();
+                if (pr.job) {
+                    if (!logStream && pr.log_file) startLogStream(pr.log_file);
+                    document.getElementById('prog-card').style.display = 'block';
+                    progTimer = setInterval(refreshProgress, 2000);
+                    refreshProgress();
+                }
+            } catch(e2) {}
+        }
+        if (!data.running && currentStreamLog) {
+            const output = document.getElementById('log-output');
+            const logRes = await fetch('/api/log-content?name=' + encodeURIComponent(currentStreamLog));
+            const logData = await logRes.json();
+            if (logData.content) { output.textContent = logData.content; output.scrollTop = output.scrollHeight; }
+        }
+    } catch(e) {}
+}
+
+async function init() {
+    await checkInstall();
+    await loadPartitions();
+    await refreshMounts();
+    await checkStatus();
+    document.getElementById('dst-base').addEventListener('input', checkDstExists);
+    setInterval(checkStatus, 5000);
+}
+init();
+</script>
+</body>
+</html>

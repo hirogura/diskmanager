@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Disk Manager</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<aside class="sidebar">
+    <a class="brand" href="#partition"><span class="brand-icon" aria-hidden="true">DM</span><span>Disk Manager<small id="version">v.0.0.1</small></span></a>
+    <div class="nav-caption">ディスク管理</div>
+    <nav aria-label="機能選択">
+        <button data-page="partition" aria-current="page"><span aria-hidden="true">01</span>パーティション操作</button>
+        <button data-page="smart"><span aria-hidden="true">02</span>S.M.A.R.T.情報</button>
+        <button data-page="clone"><span aria-hidden="true">03</span>Clonezilla</button>
+        <button data-page="rescue"><span aria-hidden="true">04</span>ddrescue</button>
+        <button data-page="rsync"><span aria-hidden="true">05</span>rsync</button>
+        <button data-page="wipe"><span aria-hidden="true">06</span>ディスク完全消去</button>
+        <button data-page="update" class="system-first"><span aria-hidden="true">07</span>アップデート</button>
+        <button data-page="restart"><span aria-hidden="true">08</span>再起動</button>
+        <button data-page="refresh"><span aria-hidden="true">09</span>リフレッシュ</button>
+    </nav>
+    <div class="sidebar-footer"><span id="connection" role="status">接続確認中</span><small>PORT 3361</small></div>
+</aside>
+<main class="workspace">
+    <header class="page-heading"><div><div class="eyebrow">DISK MANAGER / WORKSPACE</div><h1 id="page-title">パーティション操作</h1><p id="page-description">ディスク構成の確認と、パーティションの作成・削除・サイズ変更。</p></div><span class="local-badge">ローカルディスク管理</span></header>
+    <div id="panes" class="panes"></div>
+    <section id="system-pane" class="system-pane" hidden>
+        <div class="system-card"><h2 id="action-title"></h2><p id="action-description"></p><dl><dt>アプリケーション</dt><dd>Disk Manager</dd><dt>更新元</dt><dd>hirogura/diskmanager · main</dd><dt>公開ポート</dt><dd>3361</dd></dl><button id="action-button" class="primary"></button><p id="action-status" role="status" aria-live="polite"></p><button id="reload-button" hidden>画面を再読み込み</button><pre id="update-log" hidden></pre></div>
+    </section>
+    <noscript>Disk Manager を利用するには JavaScript を有効にしてください。</noscript>
+</main>
+</body>
+</html>

@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>レスキュー - Disk Manager</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.header{background:#1e293b;padding:16px 24px;border-bottom:1px solid #334155;display:flex;align-items:center;gap:16px}
+.header h1{font-size:1.4em;color:#38bdf8}
+.header .version{color:#94a3b8;font-size:0.85em;font-weight:normal;padding-top:4px}
+.header-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+.btn-header{padding:6px 14px;border:none;border-radius:6px;background:#334155;color:#e2e8f0;font-size:0.82em;cursor:pointer;transition:all 0.2s}
+.btn-header:hover{background:#475569}
+.btn-header:disabled{opacity:0.5;cursor:not-allowed}
+.header .port{color:#64748b;font-size:0.85em}
+.main{max-width:1200px;margin:0 auto;padding:24px}
+.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:20px;margin-bottom:20px}
+.card h2{font-size:1.1em;color:#38bdf8;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card h2 .btn-header{margin-left:auto;font-size:0.78em;padding:5px 12px}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;margin-bottom:6px;color:#94a3b8;font-size:0.9em}
+select,input[type=text]{width:100%;padding:10px;background:#0f172a;border:1px solid #475569;border-radius:6px;color:#e2e8f0;font-size:0.95em}
+select:focus,input:focus{outline:none;border-color:#38bdf8}
+.btn{padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:0.95em;font-weight:500;transition:all 0.2s}
+.btn-primary{background:#2563eb;color:#fff}.btn-primary:hover{background:#1d4ed8}
+.btn-danger{background:#dc2626;color:#fff}.btn-danger:hover{background:#b91c1c}
+.btn-secondary{background:#475569;color:#e2e8f0}.btn-secondary:hover{background:#64748b}
+.btn-info{background:#0891b2;color:#fff}.btn-info:hover{background:#0e7490}
+.btn-force{background:#7f1d1d;color:#fff}.btn-force:hover{background:#991b1b}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.btn-group{display:flex;gap:10px;margin-top:16px;align-items:center}
+.device-info{background:#1a2332;border:1px solid #2d4a5e;border-radius:6px;padding:12px;font-family:'Fira Code',monospace;font-size:0.8em;color:#7dd3fc;max-height:200px;overflow-y:auto;white-space:pre-wrap;margin-top:8px;line-height:1.5}
+.type-toggle{display:flex;gap:0;margin-bottom:10px;border:1px solid #475569;border-radius:6px;overflow:hidden;width:fit-content}
+.type-toggle button{padding:8px 16px;background:#0f172a;border:none;color:#94a3b8;cursor:pointer;font-size:0.85em;transition:all 0.2s}
+.type-toggle button.active{background:#2563eb;color:#fff}
+.type-toggle button:not(:last-child){border-right:1px solid #475569}
+.checkbox-row{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px}
+.checkbox-row label{display:flex;align-items:center;gap:6px;color:#e2e8f0;font-size:0.9em;cursor:pointer}
+.checkbox-row input[type=checkbox]{width:auto}
+.opt-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.opt-group{margin-bottom:10px}
+.opt-group label{display:block;margin-bottom:4px;color:#94a3b8;font-size:0.85em}
+.opt-group input{padding:8px;font-size:0.85em}
+.log-output{background:#000;border:1px solid #334155;border-radius:6px;padding:12px;font-family:'Fira Code',monospace;font-size:0.82em;color:#4ade80;max-height:400px;overflow-y:auto;white-space:pre-wrap;margin-top:10px;line-height:1.4}
+.log-select{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+.log-select select{flex:1}
+.status-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:0.8em;font-weight:bold}
+.status-running{background:rgba(34,197,94,0.2);color:#22c55e}
+.status-idle{background:rgba(100,116,139,0.2);color:#94a3b8}
+.prog{margin-top:6px}
+.prog-head{display:flex;justify-content:space-between;font-size:0.9em;margin-bottom:6px;gap:8px;flex-wrap:wrap}
+.prog-bar{height:14px;background:#334155;border-radius:7px;overflow:hidden}
+.prog-fill{height:100%;background:#2563eb;border-radius:7px;transition:width 0.8s;min-width:0}
+.prog.done .prog-fill{background:#16a34a}
+.prog.error .prog-fill{background:#dc2626}
+.prog-sub{font-size:0.82em;color:#94a3b8;margin-top:6px;line-height:1.7}
+.tabs{display:flex;gap:0;border-bottom:2px solid #334155;margin-bottom:16px}
+.tabs button{padding:10px 20px;background:none;border:none;color:#64748b;cursor:pointer;font-size:0.95em;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all 0.2s}
+.tabs button.active{color:#38bdf8;border-bottom-color:#38bdf8}
+.tab-content{display:none}.tab-content.active{display:block}
+.notify{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:6px;color:#fff;z-index:1000;animation:fadeIn 0.3s}
+.notify.success{background:#16a34a}.notify.error{background:#dc2626}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+.info-panel{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px}
+.side-section{margin-bottom:8px}
+.side-section h3{font-size:0.95em;color:#94a3b8;margin-bottom:8px}
+.help-text{font-size:0.8em;color:#64748b;margin-top:4px}
+.cmd-box{background:#0f172a;border:1px solid #475569;border-radius:6px;padding:12px;margin-top:12px;display:none}
+.cmd-box pre{margin:0;font-family:'Fira Code',monospace;font-size:0.85em;color:#4ade80;white-space:pre-wrap;word-break:break-all}
+.cmd-box .cmd-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.cmd-box .cmd-header span{color:#94a3b8;font-size:0.85em}
+</style>
+<link rel="stylesheet" href="/pane.css">
+<script src="/pane.js"></script>
+</head>
+<body>
+<div class="header">
+    <div class="header-actions">
+        <button class="btn-header" onclick="location.reload()">リフレッシュ</button>
+    </div>
+</div>
+<div class="main">
+    <div class="header-row">
+        <span id="status-badge" class="status-badge status-idle" role="status">待機中</span>
+    </div>
+    <div class="tabs">
+        <button class="active" onclick="switchTab('rescue',this)">レスキュー</button>
+        <button onclick="switchTab('logs',this)">ログ</button>
+    </div>
+
+    <div id="tab-rescue" class="tab-content active">
+        <div class="card">
+            <h2>デバイス設定</h2>
+            <div class="info-panel">
+                <div class="side-section">
+                    <h3>コピー元</h3>
+                    <div class="type-toggle" id="src-toggle">
+                        <button class="active" onclick="setSideType('src','disk',this)">物理ディスク</button>
+                        <button onclick="setSideType('src','file',this)">イメージファイル</button>
+                    </div>
+                    <div id="src-disk-wrap">
+                        <select id="source" onchange="loadDeviceInfo('source')">
+                            <option value="">-- デバイスを選択 --</option>
+                        </select>
+                    </div>
+                    <div id="src-file-wrap" style="display:none">
+                        <input type="text" id="source-path" placeholder="/path/to/image.img" oninput="loadFileInfo('source-path','source-info',false)">
+                        <div class="help-text">既存のイメージファイルを指定してください</div>
+                    </div>
+                    <div class="device-info" id="source-info">デバイスを選択してください</div>
+                </div>
+                <div class="side-section">
+                    <h3>コピー先</h3>
+                    <div class="type-toggle" id="dst-toggle">
+                        <button class="active" onclick="setSideType('dst','disk',this)">物理ディスク</button>
+                        <button onclick="setSideType('dst','file',this)">イメージファイル</button>
+                    </div>
+                    <div id="dst-disk-wrap">
+                        <select id="dest" onchange="loadDeviceInfo('dest')">
+                            <option value="">-- デバイスを選択 --</option>
+                        </select>
+                    </div>
+                    <div id="dst-file-wrap" style="display:none">
+                        <input type="text" id="dest-path" placeholder="/path/to/output.img" oninput="loadFileInfo('dest-path','dest-info',true)">
+                        <div class="help-text">新規作成の場合はファイル名のみ入力</div>
+                    </div>
+                    <div class="device-info" id="dest-info">デバイスを選択してください</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>オプション</h2>
+            <div class="opt-grid">
+                <div class="opt-group">
+                    <label>リトライパス数（-r）</label>
+                    <input type="text" id="opt-retry-passes" placeholder="0（0=再試行しない）">
+                    <div class="help-text">-1で無制限</div>
+                </div>
+                <div class="opt-group">
+                    <label>開始位置（-i バイト）</label>
+                    <input type="text" id="opt-input-pos" placeholder="例: 1GiB">
+                </div>
+                <div class="opt-group">
+                    <label>最大転送量（-s）</label>
+                    <input type="text" id="opt-size-limit" placeholder="例: 500GiB">
+                </div>
+                <div class="opt-group">
+                    <label>セクタサイズ（-b）</label>
+                    <input type="text" id="opt-sector-size" placeholder="512（デフォルト）">
+                </div>
+                <div class="opt-group">
+                    <label>最大エラー数（-e）</label>
+                    <input type="text" id="opt-max-bad-areas" placeholder="無制限">
+                </div>
+                <div class="opt-group">
+                    <label>最大エラー率（-E）</label>
+                    <input type="text" id="opt-max-error-rate" placeholder="無制限">
+                </div>
+                <div class="opt-group">
+                    <label>タイムアウト（-T）</label>
+                    <input type="text" id="opt-timeout" placeholder="例: 30s, 5m">
+                </div>
+            </div>
+            <div class="checkbox-row">
+                <label><input type="checkbox" id="opt-direct"> ダイレクトリード（-d）</label>
+                <label><input type="checkbox" id="opt-odirect"> ダイレクトライト（-D）</label>
+                <label><input type="checkbox" id="opt-force" checked> 上書き許可（-f）</label>
+                <label><input type="checkbox" id="opt-no-scrape"> スクレイプスキップ（-n）</label>
+                <label><input type="checkbox" id="opt-no-sweep"> スウィープスキップ（-N）</label>
+                <label><input type="checkbox" id="opt-sparse"> スパースライト（-S）</label>
+                <label><input type="checkbox" id="opt-reverse"> 逆方向実行（-R）</label>
+                <label><input type="checkbox" id="opt-unidirectional"> 単方向実行（-u）</label>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>実行</h2>
+            <div class="form-group">
+                <label>再開用ログファイル</label>
+                <select id="resume-log">
+                    <option value="">-- 新規実行 --</option>
+                </select>
+            </div>
+            <div class="btn-group">
+                <button class="btn btn-info" id="btn-show-cmd" onclick="toggleCmdBox()">実行コマンドを表示</button>
+                <button class="btn btn-primary" id="btn-start" onclick="startRescue()">開始</button>
+                <button class="btn btn-danger" id="btn-stop" onclick="stopRescue()" disabled>中断</button>
+                <button class="btn btn-force" id="btn-force-stop" onclick="forceStopRescue()" disabled>強制停止</button>
+            </div>
+            <div class="cmd-box" id="cmd-box">
+                <div class="cmd-header">
+                    <span>実行コマンド（ターミナルで直接実行可能）</span>
+                    <button class="btn btn-secondary" onclick="copyCmd()" style="padding:6px 14px;font-size:0.85em">コピー</button>
+                </div>
+                <pre id="cmd-text"></pre>
+            </div>
+        </div>
+
+        <div class="card" id="prog-card" style="display:none">
+            <h2>進捗（参考値）</h2>
+            <div class="prog" id="prog">
+                <div class="prog-head"><span id="prog-label">準備中...</span><span id="prog-pct">0.0 %</span></div>
+                <div class="prog-bar"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
+                <div class="prog-sub" id="prog-sub"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>出力
+                <button class="btn-header" onclick="showCurrentSession()">現在のセッションを表示</button>
+            </h2>
+            <div class="log-output" id="log-output">待機中...</div>
+        </div>
+    </div>
+
+    <div id="tab-logs" class="tab-content">
+        <div class="card">
+            <h2>ログファイル一覧</h2>
+            <div class="log-select">
+                <select id="log-select" onchange="loadLogContent()">
+                    <option value="">-- ログを選択 --</option>
+                </select>
+                <button class="btn btn-secondary" onclick="refreshLogs()">更新</button>
+            </div>
+            <div class="log-output" id="log-view" style="max-height:600px">ログを選択してください</div>
+        </div>
+    </div>
+</div>
+
+<script>
+let statusPoll = null;
+let logStream = null;
+let srcType = 'disk';
+let dstType = 'disk';
+
+function notify(msg, type) {
+    const el = document.createElement('div');
+    el.className = 'notify ' + type;
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3000);
+}
+
+function switchTab(name, btn) {
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    if (btn) btn.classList.add('active');
+}
+
+function setSideType(side, type, btn) {
+    const toggle = btn.parentElement;
+    toggle.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    if (side === 'src') {
+        srcType = type;
+        document.getElementById('src-disk-wrap').style.display = type === 'disk' ? '' : 'none';
+        document.getElementById('src-file-wrap').style.display = type === 'file' ? '' : 'none';
+        document.getElementById('source-info').textContent = type === 'disk' ? 'デバイスを選択してください' : 'パスを入力してください';
+    } else {
+        dstType = type;
+        document.getElementById('dst-disk-wrap').style.display = type === 'disk' ? '' : 'none';
+        document.getElementById('dst-file-wrap').style.display = type === 'file' ? '' : 'none';
+        document.getElementById('dest-info').textContent = type === 'disk' ? 'デバイスを選択してください' : 'パスを入力してください';
+    }
+}
+
+async function loadDevices() {
+    try {
+        const res = await fetch('/api/devices');
+        const devs = await res.json();
+        ['source', 'dest'].forEach(id => {
+            const sel = document.getElementById(id);
+            sel.innerHTML = '<option value="">-- デバイスを選択 --</option>';
+            devs.forEach(d => { sel.innerHTML += '<option value="'+d.path+'">'+d.label+'</option>'; });
+        });
+    } catch(e) {}
+}
+
+async function loadDeviceInfo(which) {
+    const sel = document.getElementById(which);
+    const infoEl = document.getElementById(which + '-info');
+    if (!sel.value) { infoEl.textContent = 'デバイスを選択してください'; return; }
+    infoEl.textContent = '読み込み中...';
+    try {
+        const res = await fetch('/api/device-info?path=' + encodeURIComponent(sel.value));
+        const info = await res.json();
+        let text = '';
+        if (info.lsblk) text += info.lsblk + '\n';
+        if (info.blkid) text += '\n' + info.blkid + '\n';
+        if (info.file_type) text += '\n' + info.file_type;
+        infoEl.textContent = text || '情報なし';
+    } catch(e) { infoEl.textContent = '取得エラー'; }
+}
+
+async function loadFileInfo(inputId, infoId, forDest) {
+    const path = document.getElementById(inputId).value.trim();
+    const infoEl = document.getElementById(infoId);
+    if (!path) { infoEl.textContent = 'パスを入力してください'; return; }
+    infoEl.textContent = '読み込み中...';
+    try {
+        const url = '/api/file-info?path=' + encodeURIComponent(path) + (forDest ? '&for_dest=1' : '');
+        const res = await fetch(url);
+        const info = await res.json();
+        if (info.error) { infoEl.textContent = info.error; return; }
+        let text = '';
+        if (info.status) text += '状態: ' + info.status + '\n';
+        if (info.size_human) text += 'サイズ: ' + info.size_human + '\n';
+        if (info.mtime) text += '更新日時: ' + info.mtime + '\n';
+        if (info.file_type) text += info.file_type + '\n';
+        if (info.target_dir) text += info.target_dir + '\n';
+        if (info.free_space) text += info.free_space + '\n';
+        infoEl.textContent = text || '情報なし';
+    } catch(e) { infoEl.textContent = '取得エラー'; }
+}
+
+function getSource() {
+    if (srcType === 'disk') return document.getElementById('source').value;
+    return document.getElementById('source-path').value.trim();
+}
+function getDest() {
+    if (dstType === 'disk') return document.getElementById('dest').value;
+    return document.getElementById('dest-path').value.trim();
+}
+
+function buildCmd() {
+    const source = getSource();
+    const dest = getDest();
+    const parts = ['sudo', 'ddrescue'];
+    if (document.getElementById('opt-direct').checked) parts.push('-d');
+    if (document.getElementById('opt-force').checked) parts.push('-f');
+    if (document.getElementById('opt-no-scrape').checked) parts.push('-n');
+    if (document.getElementById('opt-no-sweep').checked) parts.push('-N');
+    if (document.getElementById('opt-sparse').checked) parts.push('-S');
+    if (document.getElementById('opt-odirect').checked) parts.push('-D');
+    if (document.getElementById('opt-reverse').checked) parts.push('-R');
+    if (document.getElementById('opt-unidirectional').checked) parts.push('-u');
+    const numOpts = [
+        ['opt-retry-passes', '-r'], ['opt-input-pos', '-i'],
+        ['opt-size-limit', '-s'], ['opt-sector-size', '-b'],
+        ['opt-max-bad-areas', '-e'], ['opt-max-error-rate', '-E'],
+        ['opt-timeout', '-T'],
+    ];
+    numOpts.forEach(([id, flag]) => {
+        const v = document.getElementById(id).value.trim();
+        if (v) parts.push(flag, v);
+    });
+    if (source) parts.push(shQuote(source));
+    if (dest) parts.push(shQuote(dest));
+    const srcName = source ? source.replace(/\//g, '_').replace(/^_+/, '').substring(0, 20) : 'disk';
+    const ts = new Date().toISOString().replace(/[-:T]/g, '').substring(0, 14);
+    const mapFile = '/opt/diskmanager/logs/ddrescue_' + srcName + '_' + ts + '.map';
+    parts.push(shQuote(mapFile));
+    return parts.join(' ');
+}
+
+function shQuote(s) {
+    if (!s) return "''";
+    if (/^[a-zA-Z0-9_\-\.\/]+$/.test(s)) return s;
+    return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+function toggleCmdBox() {
+    const box = document.getElementById('cmd-box');
+    if (box.style.display === 'none' || !box.style.display) {
+        const cmd = buildCmd();
+        document.getElementById('cmd-text').textContent = cmd;
+        box.style.display = 'block';
+        document.getElementById('btn-show-cmd').textContent = '実行コマンドを隠す';
+    } else {
+        box.style.display = 'none';
+        document.getElementById('btn-show-cmd').textContent = '実行コマンドを表示';
+    }
+}
+
+function copyCmd() {
+    const text = document.getElementById('cmd-text').textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        notify('コピーしました', 'success');
+    }).catch(() => {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        notify('コピーしました', 'success');
+    });
+}
+
+async function startRescue() {
+    const source = getSource();
+    const dest = getDest();
+    if (!source) { notify('コピー元を指定してください', 'error'); return; }
+    if (!dest) { notify('コピー先を指定してください', 'error'); return; }
+
+    const resumeLog = document.getElementById('resume-log').value;
+    const options = {
+        direct: document.getElementById('opt-direct').checked,
+        odirect: document.getElementById('opt-odirect').checked,
+        force: document.getElementById('opt-force').checked,
+        no_scrape: document.getElementById('opt-no-scrape').checked,
+        no_sweep: document.getElementById('opt-no-sweep').checked,
+        sparse: document.getElementById('opt-sparse').checked,
+        reverse: document.getElementById('opt-reverse').checked,
+        unidirectional: document.getElementById('opt-unidirectional').checked,
+        retry_passes: document.getElementById('opt-retry-passes').value,
+        input_pos: document.getElementById('opt-input-pos').value,
+        size_limit: document.getElementById('opt-size-limit').value,
+        sector_size: document.getElementById('opt-sector-size').value,
+        max_bad_areas: document.getElementById('opt-max-bad-areas').value,
+        max_error_rate: document.getElementById('opt-max-error-rate').value,
+        timeout: document.getElementById('opt-timeout').value,
+    };
+
+    try {
+        const res = await fetch('/api/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source, dest, source_type: srcType, dest_type: dstType, options, resume_log: resumeLog}),
+        });
+        const data = await res.json();
+        if (data.error) { notify('エラー: ' + data.error, 'error'); return; }
+        notify('ddrescueを開始しました', 'success');
+        document.getElementById('btn-start').disabled = true;
+        document.getElementById('btn-stop').disabled = false;
+        document.getElementById('btn-force-stop').disabled = false;
+        updateStatus(true);
+        startLogStream(data.log_file);
+        startProgPoll();
+    } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function stopRescue() {
+    if (!confirm('ddrescueを中断しますか？\nログファイルは保存されます。')) return;
+    try {
+        await fetch('/api/stop', {method: 'POST'});
+        notify('中断しました', 'success');
+        suppressDoneNotify = true;
+        updateStatus(false);
+        refreshProgress();
+    } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function forceStopRescue() {
+    if (!confirm('強制停止しますか？\nプロセスは即座にSIGKILLで終了されます。')) return;
+    try {
+        await fetch('/api/force-stop', {method: 'POST'});
+        notify('強制停止しました', 'success');
+        suppressDoneNotify = true;
+        updateStatus(false);
+        refreshProgress();
+    } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+function updateStatus(running) {
+    const badge = document.getElementById('status-badge');
+    if (running) {
+        badge.textContent = '実行中'; badge.className = 'status-badge status-running';
+        document.getElementById('btn-start').disabled = true;
+        document.getElementById('btn-stop').disabled = false;
+        document.getElementById('btn-force-stop').disabled = false;
+    } else {
+        badge.textContent = '待機中'; badge.className = 'status-badge status-idle';
+        document.getElementById('btn-start').disabled = false;
+        document.getElementById('btn-stop').disabled = true;
+        document.getElementById('btn-force-stop').disabled = true;
+    }
+}
+
+async function showCurrentSession() {
+    try {
+        const st = await (await fetch('/api/status')).json();
+        if (!st.log_file) { notify('表示できるセッションがありません', 'error'); return; }
+        const name = st.log_file.split('/').pop();
+        if (st.running) {
+            startLogStream(name);
+            notify('現在のセッションを表示中', 'success');
+        } else {
+            logStream = null; currentStreamLog = '';
+            const output = document.getElementById('log-output');
+            const res = await fetch('/api/log-content?name=' + encodeURIComponent(name) + '&lines=500');
+            const data = await res.json();
+            output.textContent = data.content || 'ログが空です';
+            output.scrollTop = output.scrollHeight;
+            notify('前回のセッションを表示中', 'success');
+        }
+    } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+let currentStreamLog = '';
+let liveCompleted = '';
+let liveCurrent = '';
+let cursorCol = 0;
+function startLogStream(logName) {
+    if (logStream) logStream.close();
+    currentStreamLog = logName;
+    liveCompleted = '';
+    liveCurrent = '';
+    cursorCol = 0;
+    const output = document.getElementById('log-output');
+    output.textContent = '';
+    logStream = new EventSource('/api/log-stream?name=' + encodeURIComponent(logName));
+    logStream.onmessage = function(e) {
+        var raw = e.data.replace(/\\\\/g, '\u0000').replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\u0000/g, '\\');
+        var text = raw.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+        for (var i = 0; i < text.length; i++) {
+            var ch = text[i];
+            if (ch === '\r') {
+                cursorCol = 0;
+            } else if (ch === '\n') {
+                liveCompleted += liveCurrent + '\n';
+                liveCurrent = '';
+                cursorCol = 0;
+            } else {
+                if (cursorCol < liveCurrent.length) {
+                    liveCurrent = liveCurrent.substring(0, cursorCol) + ch + liveCurrent.substring(cursorCol + 1);
+                } else {
+                    liveCurrent += ch;
+                }
+                cursorCol++;
+            }
+        }
+        output.textContent = liveCompleted + liveCurrent;
+        output.scrollTop = output.scrollHeight;
+    };
+    logStream.onerror = function() { logStream.close(); logStream = null; checkStatus(); };
+}
+
+let progTimer = null;
+let progDoneNotified = false;
+let suppressDoneNotify = false;
+
+function fmtElapsed(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    if (h > 0) return h + '時間' + m + '分';
+    if (m > 0) return m + '分' + s + '秒';
+    return s + '秒';
+}
+
+function startProgPoll() {
+    progDoneNotified = false;
+    suppressDoneNotify = false;
+    document.getElementById('prog-card').style.display = 'block';
+    document.getElementById('prog').classList.remove('done', 'error');
+    document.getElementById('prog-fill').style.width = '0%';
+    document.getElementById('prog-pct').textContent = '0.0 %';
+    document.getElementById('prog-label').textContent = '準備中...';
+    document.getElementById('prog-sub').textContent = '';
+    if (progTimer) clearInterval(progTimer);
+    progTimer = setInterval(refreshProgress, 2000);
+    refreshProgress();
+}
+
+function stopProgPoll() {
+    if (progTimer) { clearInterval(progTimer); progTimer = null; }
+}
+
+async function refreshProgress() {
+    try {
+        const res = await fetch('/api/rescue/progress');
+        if (!res.ok) {
+            // 旧サーバーでは進捗APIが存在しない
+            stopProgPoll();
+            document.getElementById('prog-card').style.display = 'none';
+            return;
+        }
+        const p = await res.json();
+        if (!p.job) {
+            stopProgPoll();
+            if (document.getElementById('prog-pct').textContent === '0.0 %') {
+                document.getElementById('prog-card').style.display = 'none';
+            }
+            return;
+        }
+        renderProgress(p);
+        if (!p.running) {
+            stopProgPoll();
+            if (!progDoneNotified && !suppressDoneNotify) {
+                progDoneNotified = true;
+                if (p.status === 'done') notify('レスキューが完了しました', 'success');
+                else if (p.status === 'stopped') notify('レスキューは中断されました', 'error');
+                else if (p.status === 'error') notify('レスキューが異常終了しました（出力ログを確認してください）', 'error');
+            }
+        }
+    } catch(e) {}
+}
+
+function renderProgress(p) {
+    const pct = Math.min(100, Number(p.percent || 0));
+    document.getElementById('prog-pct').textContent = pct.toFixed(1) + ' %';
+    document.getElementById('prog-fill').style.width = pct + '%';
+    const box = document.getElementById('prog');
+    box.classList.remove('done', 'error');
+    let label = '実行中... ' + pct.toFixed(1) + ' %';
+    if (p.adopted && p.running) label += '（サーバー再起動後に引き継ぎ）';
+    if (!p.running) {
+        if (p.status === 'done') { label = '完了'; box.classList.add('done'); }
+        else if (p.status === 'stopped') { label = '中断'; box.classList.add('error'); }
+        else if (p.status === 'unknown') { label = '終了（結果不明）'; box.classList.add('error'); }
+        else { label = '異常終了'; box.classList.add('error'); }
+    }
+    document.getElementById('prog-label').textContent = label;
+    let sub = '';
+    if (p.rescued) sub += '救出済み ' + p.rescued;
+    if (p.current_rate) sub += (sub ? ' ｜ ' : '') + '現在 ' + p.current_rate;
+    if (p.average_rate) sub += '（平均 ' + p.average_rate + '）';
+    if (p.remaining) sub += (sub ? ' ｜ ' : '') + '残り ' + p.remaining;
+    if (p.run_time) sub += (sub ? ' ｜ ' : '') + '実行 ' + p.run_time;
+    sub += (sub ? ' ｜ ' : '') + '経過 ' + fmtElapsed(p.elapsed_sec);
+    sub += ' ｜ 読取エラー ' + (p.read_errors || '0') + ' / 不良箇所 ' + (p.bad_areas || '0');
+    if (p.phase) sub += '\n状況: ' + p.phase;
+    sub += '\n※ ddrescue 出力の参考表示です。正確な状況は出力ログで確認してください。';
+    document.getElementById('prog-sub').textContent = sub;
+}
+
+async function checkStatus() {
+    try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        updateStatus(data.running);
+        if (data.running && !logStream && data.log_file) {
+            startLogStream(data.log_file.split('/').pop());
+        }
+        // 別タブ開始・リロード後に実行中だった場合は進捗ポーリングも復帰させる
+        if (data.running && !progTimer) {
+            try {
+                const pr = await (await fetch('/api/rescue/progress')).json();
+                if (pr.job && pr.running) {
+                    document.getElementById('prog-card').style.display = 'block';
+                    progTimer = setInterval(refreshProgress, 2000);
+                    refreshProgress();
+                }
+            } catch(e2) {}
+        }
+        if (!data.running && currentStreamLog) {
+            const output = document.getElementById('log-output');
+            const logRes = await fetch('/api/log-content?name=' + encodeURIComponent(currentStreamLog));
+            const logData = await logRes.json();
+            if (logData.content) { output.textContent = logData.content; output.scrollTop = output.scrollHeight; }
+        }
+    } catch(e) {}
+}
+
+async function refreshLogs() {
+    try {
+        const res = await fetch('/api/logs');
+        const logs = await res.json();
+        const sel = document.getElementById('log-select');
+        const resumeSel = document.getElementById('resume-log');
+        const current = sel.value;
+        sel.innerHTML = '<option value="">-- ログを選択 --</option>';
+        resumeSel.innerHTML = '<option value="">-- 新規実行 --</option>';
+        logs.forEach(l => {
+            const sizeKB = (l.size / 1024).toFixed(1);
+            const date = new Date(l.mtime * 1000).toLocaleString('ja-JP');
+            const label = l.name + ' (' + sizeKB + 'KB) ' + date;
+            sel.innerHTML += '<option value="'+l.name+'">'+label+'</option>';
+            resumeSel.innerHTML += '<option value="'+l.name+'">'+label+'</option>';
+        });
+        if (current) sel.value = current;
+    } catch(e) {}
+}
+
+async function loadLogContent() {
+    const name = document.getElementById('log-select').value;
+    const view = document.getElementById('log-view');
+    if (!name) { view.textContent = 'ログを選択してください'; return; }
+    try {
+        const res = await fetch('/api/log-content?name=' + encodeURIComponent(name) + '&lines=500');
+        const data = await res.json();
+        view.textContent = data.content || '';
+        view.scrollTop = view.scrollHeight;
+    } catch(e) { view.textContent = '読み込みエラー'; }
+}
+
+async function init() {
+    await loadDevices();
+    await refreshLogs();
+    await checkStatus();
+    statusPoll = setInterval(checkStatus, 5000);
+}
+init();
+</script>
+</body>
+</html>

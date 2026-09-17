@@ -1,0 +1,120 @@
+:root{
+    --pane-bg:#0b1220;
+    --pane-card:#111c2e;
+    --pane-card-2:#0e1728;
+    --pane-border:#223349;
+    --pane-line:#1b2a3f;
+    --pane-text:#dce7f3;
+    --pane-dim:#8ba1b8;
+    --pane-faint:#5d748c;
+    --pane-teal:#2dd4bf;
+    --pane-teal-soft:rgba(45,212,191,0.14);
+    --pane-navy-btn:#16304a;
+    --pane-danger:#ef4444;
+    --pane-ok:#34d399;
+    --pane-radius:10px;
+}
+body{
+    background:var(--pane-card-2);
+    color:var(--pane-text);
+    font-family:'Segoe UI','Hiragino Sans',system-ui,sans-serif;
+}
+.main{padding-top:18px}
+.card{
+    background:var(--pane-card);
+    border:1px solid var(--pane-border);
+    border-radius:var(--pane-radius);
+    padding:18px 20px;
+    margin-bottom:18px;
+    box-shadow:0 2px 10px rgba(2,8,20,0.35);
+}
+.card h2{
+    color:var(--pane-teal);
+    letter-spacing:0.02em;
+    margin-bottom:14px;
+    padding-bottom:8px;
+    border-bottom:1px solid var(--pane-line);
+}
+select,input[type=text],input[type=number]{
+    background:#0a1424;
+    border:1px solid #2b3d55;
+    color:var(--pane-text);
+    border-radius:8px;
+    padding:10px 12px;
+}
+select:focus,input:focus{outline:none;border-color:var(--pane-teal);box-shadow:0 0 0 2px var(--pane-teal-soft)}
+.btn-primary{background:#0e7490}
+.btn-primary:hover{background:#0d637c}
+.btn-info{background:#0f766e}
+.btn-info:hover{background:#0d655d}
+.btn-danger{background:#b91c1c}
+.btn-danger:hover{background:#991b1b}
+.btn-force{background:#7f1d1d}
+.btn-force:hover{background:#991b1b}
+.btn-secondary{background:#1c2c42}
+.btn-secondary:hover{background:#27394f}
+.btn-warning{background:#92400e}
+.btn-warning:hover{background:#7c3708}
+.btn-header{background:var(--pane-navy-btn)}
+.btn-header:hover{background:#1d3c5c}
+.device-info{
+    background:#0a1424;
+    border:1px solid #23364e;
+    color:#93e6dc;
+}
+.log-output{
+    background:#060c16;
+    border:1px solid var(--pane-line);
+    color:#7ee0a2;
+}
+.cmd-box{background:#0a1424;border:1px solid #2b3d55}
+.warn{background:rgba(239,68,68,0.08);border-color:rgba(239,68,68,0.5);color:#f3b3b3}
+.warn strong{color:#fcd0d0}
+.info{background:var(--pane-teal-soft);border-color:rgba(45,212,191,0.45);color:#a9ecdf}
+.install-banner{background:rgba(234,179,8,0.08);border-color:rgba(234,179,8,0.45)}
+.prog-bar,.ubar{background:#152238}
+.prog-fill{background:linear-gradient(90deg,#0e7490,#2dd4bf)}
+.prog.done .prog-fill,.prog-item.done .prog-fill{background:#10b981}
+.prog.error .prog-fill,.prog-item.error .prog-fill{background:#ef4444}
+.dev{background:#0d1728;border:1px solid var(--pane-border)}
+.type-toggle button{background:#0a1424}
+.type-toggle button.active{background:#0e7490;color:#fff}
+.status-running{background:rgba(52,211,153,0.15);color:var(--pane-ok)}
+.status-idle{background:rgba(139,161,184,0.15);color:var(--pane-dim)}
+.tabs button.active{color:var(--pane-teal);border-bottom-color:var(--pane-teal)}
+.notify.success{background:#0f766e}
+.notify.error{background:#b91c1c}
+.help-text{color:var(--pane-faint)}
+.part-table th,.attr-table th,.kv-table th{background:#0d1728}
+.part-table td,.attr-table td,.kv-table td{color:#c3d2e2}
+
+.in-pane body{background:var(--pane-card-2)}
+html.in-pane .header{
+    background:transparent;
+    border-bottom:none;
+    padding:0 0 6px;
+    min-height:0;
+}
+html.in-pane .header h1,
+html.in-pane .header .version,
+html.in-pane .header .port,
+html.in-pane .header .pane-back{display:none}
+html.in-pane .header:empty{display:none}
+html.in-pane .main{max-width:100%;padding:16px 4px 24px}
+html.in-pane .notify{top:12px;right:12px}
+html.in-pane .card{padding:16px}
+html.in-pane .op-panel{position:static}
+.header-row{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+
+@media (max-width:860px){
+    .info-panel{grid-template-columns:1fr}
+    .opt-grid{grid-template-columns:repeat(2,1fr)}
+    .main{padding:14px}
+}
+@media (max-width:560px){
+    .opt-grid{grid-template-columns:1fr}
+    .card{padding:14px}
+    .header{flex-wrap:wrap;gap:10px}
+    .header-actions{flex-wrap:wrap}
+    .form-row{grid-template-columns:1fr}
+}

@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>パーティション操作 - Disk Manager</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.header{background:#1e293b;padding:16px 24px;border-bottom:1px solid #334155;display:flex;align-items:center;gap:16px}
+.header h1{font-size:1.4em;color:#38bdf8}
+.header .version{color:#94a3b8;font-size:0.85em;font-weight:normal;padding-top:4px}
+.header-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+.btn-header{padding:6px 14px;border:none;border-radius:6px;background:#334155;color:#e2e8f0;font-size:0.82em;cursor:pointer;transition:all 0.2s}
+.btn-header:hover{background:#475569}
+.btn-header:disabled{opacity:0.5;cursor:not-allowed}
+.main{max-width:1100px;margin:0 auto;padding:24px}
+.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:20px;margin-bottom:20px}
+.card h2{font-size:1.1em;color:#38bdf8;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card h2 .btn-header{margin-left:auto;font-size:0.78em;padding:5px 12px}
+.warn{background:rgba(220,38,38,0.12);border:1px solid #dc2626;border-radius:8px;padding:14px 16px;margin-bottom:20px;color:#fca5a5;font-size:0.9em;line-height:1.7}
+.warn strong{color:#fecaca}
+.install-banner{background:rgba(234,179,8,0.1);border:1px solid #eab308;border-radius:8px;padding:14px 16px;margin-bottom:20px;color:#fde68a;font-size:0.9em;line-height:1.7;display:none}
+.dev{border:1px solid #475569;border-radius:8px;padding:14px;margin-bottom:14px;background:#0f172a}
+.dev-path{font-size:1.05em;font-weight:bold;color:#e2e8f0}
+.dev-meta{font-size:0.85em;color:#94a3b8;margin-top:4px;line-height:1.6}
+.dev-meta .serial{color:#7dd3fc;font-family:'Fira Code',monospace}
+.sys-badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:0.75em;font-weight:bold;background:rgba(234,179,8,0.2);color:#eab308;margin-left:8px}
+.mount-warn{color:#f87171;font-weight:bold;font-size:0.85em}
+/* KDE風グラフィカルバー */
+.pbar{display:flex;height:44px;border:1px solid #475569;border-radius:6px;overflow:hidden;margin-top:12px;background:#1e293b}
+.seg{position:relative;border-right:1px solid #0f172a;min-width:8px;cursor:pointer;overflow:hidden}
+.seg:last-child{border-right:none}
+.seg .used{position:absolute;left:0;top:0;bottom:0;background:rgba(0,0,0,0.45)}
+.seg .seg-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.72em;font-weight:bold;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.8);white-space:nowrap;overflow:hidden;padding:0 4px}
+.seg.free{background:repeating-linear-gradient(45deg,#1e293b,#1e293b 6px,#273449 6px,#273449 12px)}
+.seg.selected{outline:3px solid #38bdf8;outline-offset:-3px;z-index:1}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:0.78em;color:#94a3b8}
+.legend span{display:flex;align-items:center;gap:5px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px}
+.part-table{width:100%;border-collapse:collapse;margin-top:10px;font-size:0.82em}
+.part-table th,.part-table td{border:1px solid #334155;padding:5px 8px;text-align:left}
+.part-table th{background:#1e293b;color:#94a3b8}
+.part-table td{font-family:'Fira Code',monospace;color:#cbd5e1}
+.part-table tr.row-sel td{background:rgba(56,189,248,0.12)}
+.part-table tr.clickable{cursor:pointer}
+.part-table tr.clickable:hover td{background:rgba(56,189,248,0.06)}
+.ubar{height:8px;background:#334155;border-radius:4px;overflow:hidden;min-width:80px}
+.ubar>div{height:100%;background:#38bdf8;border-radius:4px}
+.op-panel{position:sticky;top:12px}
+.op-info{background:#0f172a;border:1px solid #475569;border-radius:6px;padding:12px;font-size:0.88em;line-height:1.8;margin-bottom:12px}
+.form-group{margin-bottom:12px}
+.form-group label{display:block;margin-bottom:6px;color:#94a3b8;font-size:0.9em}
+select,input[type=text],input[type=number]{width:100%;padding:10px;background:#0f172a;border:1px solid #475569;border-radius:6px;color:#e2e8f0;font-size:0.95em}
+select:focus,input:focus{outline:none;border-color:#38bdf8}
+input[type=range]{width:100%;accent-color:#38bdf8}
+.btn{padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-size:0.95em;font-weight:500;transition:all 0.2s}
+.btn-primary{background:#2563eb;color:#fff}.btn-primary:hover{background:#1d4ed8}
+.btn-danger{background:#dc2626;color:#fff}.btn-danger:hover{background:#b91c1c}
+.btn-secondary{background:#475569;color:#e2e8f0}.btn-secondary:hover{background:#64748b}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.btn-group{display:flex;gap:10px;margin-top:12px;align-items:center;flex-wrap:wrap}
+.help-text{font-size:0.8em;color:#64748b;margin-top:4px;line-height:1.6}
+.note{font-size:0.82em;color:#94a3b8;margin-top:10px;line-height:1.6}
+.busy{opacity:0.6;pointer-events:none}
+.notify{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:6px;color:#fff;z-index:1000;animation:fadeIn 0.3s;max-width:80vw}
+.notify.success{background:#16a34a}.notify.error{background:#dc2626}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+</style>
+<link rel="stylesheet" href="/pane.css">
+<script src="/pane.js"></script>
+</head>
+<body>
+<div class="header">
+    <h1>パーティション操作</h1>
+        <div class="header-actions">
+        <button class="btn-header pane-back" onclick="location.href='/'">レスキューに戻る</button>
+        <button class="btn-header" onclick="loadAll()">リフレッシュ</button>
+    </div>
+</div>
+<div class="main">
+    <div class="warn">
+        <strong>警告：パーティション操作はデータを失う危険があります。</strong><br>
+        拡大・縮小・作成・削除のいずれも、対象ディスク・パーティションをよく確認してから実行してください。<br>
+        マウント中のパーティションとシステムドライブは保護のため操作できません（先にアンマウントしてください）。<br>
+        縮小は使用中容量以下にはできません。xfs / btrfs の縮小と vfat の拡縮小（fatresize未導入時）は未対応です。
+    </div>
+    <div class="install-banner" id="install-banner">
+        <span id="install-msg">パーティション操作には <b>parted</b> が必要です。</span>
+        <div class="btn-group">
+            <button class="btn btn-primary" id="btn-install" onclick="installTools()">parted等をインストール</button>
+        </div>
+        <div class="help-text">parted・dosfstools・ntfs-3g・exfatprogs・xfsprogs・btrfs-progs を自動導入します（数分かかる場合があります）。</div>
+    </div>
+
+    <div class="card">
+        <h2>ドライブ一覧
+            <button class="btn-header" style="margin-left:auto" onclick="loadAll()">一覧を更新</button>
+        </h2>
+        <div class="legend" id="legend"></div>
+        <div id="dev-list" style="margin-top:12px">読み込み中...</div>
+    </div>
+
+    <div class="card op-panel">
+        <h2>選択中の操作対象</h2>
+        <div id="op-body"><div class="help-text">上のバーまたは表からパーティション／空き領域をクリックして選択してください。</div></div>
+    </div>
+</div>
+
+<script>
+let devices = [];
+let sysDisk = '';
+let sel = null; // {disk, kind:'part'|'free', path, part, free}
+let busy = false;
+
+const FS_COLORS = {
+    ext4:'#16a34a', btrfs:'#0e7490', xfs:'#65a30d', ntfs:'#2563eb',
+    vfat:'#eab308', exfat:'#f97316', fat32:'#eab308', fat16:'#eab308',
+    swap:'#a855f7', '':'#64748b'
+};
+function fsColor(fstype) {
+    fstype = (fstype || '').toLowerCase();
+    return FS_COLORS[fstype] || '#0891b2';
+}
+function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function notify(msg, type) {
+    const el = document.createElement('div');
+    el.className = 'notify ' + type;
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 5000);
+}
+function fmtMiB(bytes) { return Math.round(bytes / 1048576); }
+
+async function loadAll() {
+    await checkTools();
+    await loadDevices();
+}
+
+async function checkTools() {
+    try {
+        const st = await (await fetch('/api/part/check')).json();
+        sysDisk = st.system_disk || '';
+        const banner = document.getElementById('install-banner');
+        if (!st.installed) {
+            banner.style.display = 'block';
+            if (st.installing) {
+                document.getElementById('install-msg').innerHTML = 'ツールをインストール中です。完了後に自動で再確認します…';
+                document.getElementById('btn-install').disabled = true;
+                pollInstall();
+            }
+        } else {
+            banner.style.display = 'none';
+        }
+    } catch(e) {}
+}
+
+async function installTools() {
+    if (!confirm('parted等のツールをインストールしますか？\n（数分かかる場合があります）')) return;
+    try {
+        const res = await fetch('/api/part/install', {method:'POST'});
+        const data = await res.json();
+        if (data.error) { notify('エラー: ' + data.error, 'error'); return; }
+        if (data.already) { notify('すでにインストール済みです', 'success'); loadAll(); return; }
+        notify('インストールを開始しました。完了後に自動で再確認します', 'success');
+        document.getElementById('btn-install').disabled = true;
+        pollInstall();
+    } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function pollInstall() {
+    for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        try {
+            const st = await (await fetch('/api/part/check')).json();
+            if (st.installed) {
+                notify('インストールが完了しました', 'success');
+                document.getElementById('btn-install').disabled = false;
+                loadAll();
+                return;
+            }
+        } catch(e) {}
+    }
+    document.getElementById('btn-install').disabled = false;
+    notify('タイムアウトしました。手動で再試行してください', 'error');
+}
+
+function buildLegend() {
+    const seen = {};
+    devices.forEach(d => (d.partitions || []).forEach(p => { seen[(p.fstype || '').toLowerCase()] = true; }));
+    const items = Object.keys(seen).map(f =>
+        '<span><span class="sw" style="background:' + fsColor(f) + '"></span>' + esc(f || '不明') + '</span>').join('') +
+        '<span><span class="sw" style="background:repeating-linear-gradient(45deg,#1e293b,#1e293b 3px,#273449 3px,#273449 6px)"></span>空き領域</span>' +
+        '<span style="color:#64748b">■ 内側の暗い部分は使用中容量（参考値）</span>';
+    document.getElementById('legend').innerHTML = items;
+}
+
+async function loadDevices() {
+    const list = document.getElementById('dev-list');
+    list.textContent = '読み込み中...';
+    try {
+        const res = await fetch('/api/part/devices');
+        devices = await res.json();
+        if (!devices.length) { list.textContent = 'デバイスが見つかりません'; return; }
+        buildLegend();
+        list.innerHTML = '';
+        devices.forEach(d => list.appendChild(renderDisk(d)));
+        renderOp();
+    } catch(e) { list.textContent = '取得エラー: ' + e.message; }
+}
+
+function segTitle(p) {
+    return p.path + ' ' + p.size + (p.fstype ? ' [' + p.fstype + ']' : '') +
+        (p.used ? ' 使用中' + p.used : '') + (p.mountpoint ? ' mounted:' + p.mountpoint : '');
+}
+
+function renderDisk(d) {
+    const div = document.createElement('div');
+    div.className = 'dev';
+    const sysBadge = d.is_system ? '<span class="sys-badge">システム（操作不可）</span>' : '';
+    const mntNote = (!d.is_system && d.has_mount) ? '<div class="mount-warn">※ マウント中のパーティションは操作前にアンマウントしてください</div>' : '';
+    // パーティションテーブルが無い未初期化ディスク（/dev/sdc等の空ドライブ）は
+    // ディスク全体を選択して初期化→作成できるようにする
+    const tableLabel = d.needs_init ? 'なし（未初期化）' : (d.table || '不明');
+    if (d.needs_init && !d.is_system) {
+        const selected = (sel && sel.kind === 'uninit' && sel.disk === d.path) ? ' selected' : '';
+        const bar = '<div class="pbar"><div class="seg free' + selected + '" style="width:100%" ' +
+            'title="未初期化領域 ' + esc(d.size) + '" onclick="selectUninit(\'' + esc(d.path) + '\')">' +
+            '<div class="seg-label">未初期化 ' + esc(d.size) + ' — クリックで作成</div></div></div>';
+        const rows = '<tr class="clickable' + (selected ? ' row-sel' : '') + '" onclick="selectUninit(\'' + esc(d.path) + '\')">' +
+            '<td>未初期化領域</td><td>' + esc(d.size) + '</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>';
+        div.innerHTML =
+            '<div class="dev-path">' + esc(d.path) + ' — ' + esc(d.size) + ' [' + esc(tableLabel) + ']' + sysBadge + '</div>' +
+            '<div class="dev-meta">モデル: ' + esc(d.model || '-') + ' / シリアル: <span class="serial">' + esc(d.serial || '-') + '</span> / 接続: ' + esc(d.tran || '不明') + '</div>' +
+            '<div class="help-text" style="margin-top:8px">パーティションテーブルがありません。選択すると初期化（GPT/MBR）＋パーティション作成ができます。</div>' +
+            bar +
+            '<table class="part-table"><tr><th>パーティション</th><th>容量</th><th>FS</th><th>使用率</th><th>ラベル</th><th>マウント</th></tr>' + rows + '</table>';
+        return div;
+    }
+    // グラフィカルバー用の全セグメント（パーティション＋空きをバイト順に整列）
+    const total = d.size_bytes || 1;
+    let items = [];
+    (d.partitions || []).forEach(p => items.push({kind:'part', start:p.start_bytes || 0, bytes:p.size_bytes || 0, p:p}));
+    (d.free_spaces || []).forEach(f => items.push({kind:'free', start:f.start_bytes || 0, bytes:f.size_bytes || 0, f:f}));
+    items.sort((a, b) => a.start - b.start);
+    let bar = '<div class="pbar">';
+    items.forEach(it => {
+        const pct = Math.max(0.6, it.bytes / total * 100);
+        if (it.kind === 'part') {
+            const p = it.p;
+            let usePct = 0;
+            if (p.used_bytes && p.size_bytes) usePct = Math.min(100, p.used_bytes / p.size_bytes * 100);
+            const selected = (sel && sel.kind === 'part' && sel.path === p.path) ? ' selected' : '';
+            const short = p.path.replace(d.path, '').replace('/dev/', '') || p.path;
+            bar += '<div class="seg' + selected + '" style="width:' + pct + '%;background:' + fsColor(p.fstype) + '" ' +
+                'title="' + esc(segTitle(p)) + '" onclick="selectSeg(\'' + esc(d.path) + '\',\'part\',\'' + esc(p.path) + '\')">' +
+                (usePct ? '<div class="used" style="width:' + usePct + '%"></div>' : '') +
+                '<div class="seg-label">' + esc(short) + '</div></div>';
+        } else {
+            const f = it.f;
+            const selected = (sel && sel.kind === 'free' && sel.disk === d.path && sel.freeStart === f.start_bytes) ? ' selected' : '';
+            bar += '<div class="seg free' + selected + '" style="width:' + pct + '%" ' +
+                'title="空き領域 ' + esc(f.size) + '" onclick="selectSeg(\'' + esc(d.path) + '\',\'free\',' + f.start_bytes + ')">' +
+                '<div class="seg-label">空き ' + esc(f.size) + '</div></div>';
+        }
+    });
+    bar += '</div>';
+    // 表
+    let rows = (d.partitions || []).map(p => {
+        const isSel = (sel && sel.kind === 'part' && sel.path === p.path);
+        let usePct = 0, useTxt = '-';
+        if (p.used_bytes && p.size_bytes) {
+            usePct = Math.min(100, p.used_bytes / p.size_bytes * 100);
+            useTxt = p.use_percent || (usePct.toFixed(0) + '%');
+        } else if (p.size_bytes) {
+            useTxt = p.use_percent || '-';
+        }
+        const ubar = '<div class="ubar"><div style="width:' + usePct + '%"></div></div>';
+        return '<tr class="clickable' + (isSel ? ' row-sel' : '') + '" onclick="selectSeg(\'' + esc(d.path) + '\',\'part\',\'' + esc(p.path) + '\')">' +
+            '<td>' + esc(p.path) + '</td><td>' + esc(p.size) + '</td><td>' + esc(p.fstype || '-') + '</td>' +
+            '<td>' + (useTxt + '<br>' + ubar) + '</td>' +
+            '<td>' + esc(p.label || p.partlabel || '-') + '</td><td>' + esc(p.mountpoint || '-') + '</td></tr>';
+    }).join('');
+    (d.free_spaces || []).forEach(f => {
+        const isSel = (sel && sel.kind === 'free' && sel.disk === d.path && sel.freeStart === f.start_bytes);
+        rows += '<tr class="clickable' + (isSel ? ' row-sel' : '') + '" onclick="selectSeg(\'' + esc(d.path) + '\',\'free\',' + f.start_bytes + ')">' +
+            '<td>空き領域</td><td>' + esc(f.size) + '</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>';
+    });
+    if (!rows) rows = '<tr><td colspan="6">パーティション情報がありません</td></tr>';
+    div.innerHTML =
+        '<div class="dev-path">' + esc(d.path) + ' — ' + esc(d.size) + ' [' + esc(tableLabel) + ']' + sysBadge + '</div>' +
+        '<div class="dev-meta">モデル: ' + esc(d.model || '-') + ' / シリアル: <span class="serial">' + esc(d.serial || '-') + '</span> / 接続: ' + esc(d.tran || '不明') + '</div>' +
+        mntNote + bar +
+        '<table class="part-table"><tr><th>パーティション</th><th>容量</th><th>FS</th><th>使用率</th><th>ラベル</th><th>マウント</th></tr>' + rows + '</table>';
+    return div;
+}
+
+function selectSeg(disk, kind, key) {
+    const d = devices.find(x => x.path === disk);
+    if (!d) return;
+    if (kind === 'part') {
+        const p = (d.partitions || []).find(x => x.path === key);
+        if (!p) return;
+        sel = {disk: disk, kind: 'part', path: p.path, part: p, isSystem: d.is_system};
+    } else {
+        const f = (d.free_spaces || []).find(x => x.start_bytes === Number(key));
+        if (!f) return;
+        sel = {disk: disk, kind: 'free', free: f, freeStart: f.start_bytes, isSystem: d.is_system};
+    }
+    loadDevicesRefresh();
+}
+
+function selectUninit(disk) {
+    const d = devices.find(x => x.path === disk);
+    if (!d) return;
+    sel = {disk: disk, kind: 'uninit', isSystem: d.is_system};
+    loadDevicesRefresh();
+}
+
+function loadDevicesRefresh() {
+    // 再取得せず選択ハイライトのみ更新
+    const list = document.getElementById('dev-list');
+    list.innerHTML = '';
+    devices.forEach(d => list.appendChild(renderDisk(d)));
+    renderOp();
+}
+
+function adjacentFreeAfter(d, part) {
+    // パーティション直後の連続した空き領域
+    const endB = part.end_bytes || 0;
+    let best = null;
+    (d.free_spaces || []).forEach(f => {
+        if (f.start_bytes <= endB + 1048576 && f.start_bytes >= endB - 1048576) {
+            if (!best || f.size_bytes > best.size_bytes) best = f;
+        }
+    });
+    return best;
+}
+
+function renderOp() {
+    const body = document.getElementById('op-body');
+    if (!sel) {
+        body.innerHTML = '<div class="help-text">上のバーまたは表からパーティション／空き領域をクリックして選択してください。</div>';
+        return;
+    }
+    if (sel.isSystem) {
+        body.innerHTML = '<div class="op-info"><b>' + esc(sel.disk) + '</b> はシステムドライブのため操作できません。</div>';
+        return;
+    }
+    const d = devices.find(x => x.path === sel.disk);
+    if (sel.kind === 'uninit') {
+        // 未初期化ディスク：テーブル種別を選び、初期化＋作成を一括実行する
+        // （管理領域を除いた概算上限。厳密な空きは初期化後に確定する）
+        const maxMiB = d && d.size_bytes ? Math.max(16, fmtMiB(d.size_bytes) - 2) : 16;
+        body.innerHTML =
+            '<div class="op-info"><b>' + esc(sel.disk) + '</b> は未初期化ディスクです（' + esc(d ? d.size : '') + '）。<br>' +
+            'パーティションテーブルを作成して新規パーティションを作成します。</div>' +
+            '<div class="form-group"><label>パーティションテーブル</label>' +
+            '<select id="mk-table"><option value="gpt">GPT（推奨・2TB超対応）</option><option value="msdos">MBR（旧式・2TB以下）</option></select></div>' +
+            '<div class="form-group"><label>ファイルシステム</label>' +
+            '<select id="mk-fstype"><option value="ext4">ext4（Linux標準）</option><option value="btrfs">btrfs</option>' +
+            '<option value="xfs">xfs</option><option value="ntfs">ntfs（Windows共用）</option>' +
+            '<option value="vfat">vfat(FAT32・共用)</option><option value="exfat">exfat（共用・大容量）</option></select></div>' +
+            '<div class="form-group"><label>サイズ（MiB）<span style="color:#64748b">：最大 ' + maxMiB + ' MiB</span></label>' +
+            '<input type="range" id="mk-size" min="16" max="' + maxMiB + '" value="' + maxMiB + '" oninput="document.getElementById(\'mk-size-num\').value=this.value">' +
+            '<input type="number" id="mk-size-num" value="' + maxMiB + '" min="16" max="' + maxMiB + '" oninput="document.getElementById(\'mk-size\').value=this.value"></div>' +
+            '<div class="form-group"><label>ラベル（任意）</label><input type="text" id="mk-label" placeholder="例: data" maxlength="32">' +
+            '<div class="help-text">vfat は11文字まで（自動で大文字化）。空欄可。</div></div>' +
+            '<div class="btn-group"><button class="btn btn-primary" onclick="doCreateUninit()" ' + (busy ? 'disabled' : '') + '>初期化してパーティションを作成</button></div>' +
+            '<div class="note">※ ディスク先頭の管理領域にテーブルを書き込むため、既存データがある場合は失われます。</div>';
+        return;
+    }
+    if (sel.kind === 'part') {
+        const p = sel.part;
+        const curMiB = fmtMiB(p.size_bytes);
+        const usedMiB = p.used_bytes ? fmtMiB(p.used_bytes) : 0;
+        const minMiB = p.used_bytes ? Math.ceil(p.used_bytes * 1.05 / 1048576) + 64 : 16;
+        const adj = d ? adjacentFreeAfter(d, p) : null;
+        const maxMiB = curMiB + (adj ? fmtMiB(adj.size_bytes) : 0);
+        const canResize = maxMiB > minMiB;
+        body.innerHTML =
+            '<div class="op-info"><b>' + esc(p.path) + '</b>（' + esc(p.size) + ' / ' + esc(p.fstype || 'FS不明') + '）<br>' +
+            '使用中: ' + esc(p.used || '不明') + (p.mountpoint ? ' ｜ マウント中: <b class="mount-warn">' + esc(p.mountpoint) + '</b>' : ' ｜ 未マウント') +
+            (p.label ? ' ｜ ラベル: ' + esc(p.label) : '') + '</div>' +
+            (p.mountpoint
+                ? '<div class="btn-group"><button class="btn btn-secondary" onclick="doUnmount()" ' + (busy ? 'disabled' : '') + '>アンマウント</button></div>'
+                : '<div class="form-group" style="margin-top:12px"><label>新しいサイズ（MiB）<span style="color:#64748b">：現在 ' + curMiB + ' MiB' +
+                  (adj ? '／直後の空き ' + fmtMiB(adj.size_bytes) + ' MiB' : '／直後に空きなし') + '</span></label>' +
+                  '<input type="range" id="rs-size" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" value="' + curMiB + '" oninput="document.getElementById(\'rs-size-num\').value=this.value">' +
+                  '<input type="number" id="rs-size-num" value="' + curMiB + '" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" oninput="document.getElementById(\'rs-size\').value=this.value">' +
+                  '<div class="help-text">使用中 ' + (p.used || '不明') + ' のため ' + minMiB + ' MiB 以上が必要です。小さくすると縮小、大きくすると拡大します（拡大には直後の空きが必要）。' +
+                  (!canResize ? '<br><b style="color:#f87171">拡大・縮小できる余地がありません。</b>' : '') + '</div></div>' +
+                  '<div class="btn-group">' +
+                  '<button class="btn btn-primary" onclick="doResize()" ' + (busy || !canResize ? 'disabled' : '') + '>サイズ変更を実行</button>' +
+                  '<button class="btn btn-danger" onclick="doDelete()" ' + (busy ? 'disabled' : '') + '>パーティションを削除</button>' +
+                  '</div>' +
+                  '<div class="note">※ xfs / btrfs は拡大のみ対応（FS拡張は別途案内します）。vfat の拡縮小は fatresize 未導入のため未対応です。<br>' +
+                  '※ 縮小はファイルシステム連動で行います（ext4 / NTFS）。処理には時間がかかる場合があります。</div>');
+    } else {
+        const f = sel.free;
+        const freeMiB = fmtMiB(f.size_bytes);
+        // パーティションテーブルだけのドライブ（パーティション数0・テーブルあり）は
+        // テーブル削除ボタンを作成ボタンの右に表示する
+        const isTableOnly = d && ((d.partitions || []).length === 0) && !d.needs_init &&
+            d.table && d.table !== '不明';
+        body.innerHTML =
+            '<div class="op-info"><b>' + esc(sel.disk) + '</b> 上の空き領域（' + esc(f.size) + '）に新規パーティションを作成します。</div>' +
+            '<div class="form-group"><label>ファイルシステム</label>' +
+            '<select id="mk-fstype"><option value="ext4">ext4（Linux標準）</option><option value="btrfs">btrfs</option>' +
+            '<option value="xfs">xfs</option><option value="ntfs">ntfs（Windows共用）</option>' +
+            '<option value="vfat">vfat(FAT32・共用)</option><option value="exfat">exfat（共用・大容量）</option></select></div>' +
+            '<div class="form-group"><label>サイズ（MiB）<span style="color:#64748b">：最大 ' + freeMiB + ' MiB</span></label>' +
+            '<input type="range" id="mk-size" min="16" max="' + freeMiB + '" value="' + freeMiB + '" oninput="document.getElementById(\'mk-size-num\').value=this.value">' +
+            '<input type="number" id="mk-size-num" value="' + freeMiB + '" min="16" max="' + freeMiB + '" oninput="document.getElementById(\'mk-size\').value=this.value"></div>' +
+            '<div class="form-group"><label>ラベル（任意）</label><input type="text" id="mk-label" placeholder="例: data" maxlength="32">' +
+            '<div class="help-text">vfat は11文字まで（自動で大文字化）。空欄可。</div></div>' +
+            '<div class="btn-group"><button class="btn btn-primary" onclick="doCreate()" ' + (busy ? 'disabled' : '') + '>パーティションを作成</button>' +
+            (isTableOnly ? '<button class="btn btn-danger" onclick="doDeleteTable()" ' + (busy ? 'disabled' : '') + '>パーティションテーブルを削除</button>' : '') + '</div>' +
+            (isTableOnly ? '<div class="note">※ パーティションが無いため、不要であればパーティションテーブル自体を削除して未初期化に戻せます。</div>' : '');
+    }
+}
+
+function setBusy(b) {
+    busy = b;
+    document.querySelector('.main').classList.toggle('busy', b);
+}
+
+async function doUnmount() {
+    if (!sel || sel.kind !== 'part') return;
+    try {
+        setBusy(true);
+        const res = await fetch('/api/part/unmount', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({part: sel.path})});
+        const data = await res.json();
+        setBusy(false);
+        if (data.error || data.ok === false) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
+        notify(data.message || 'アンマウントしました', 'success');
+        sel = null;
+        await loadDevices();
+    } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function doDelete() {
+    if (!sel || sel.kind !== 'part') return;
+    const p = sel.part;
+    if (!confirm(p.path + '（' + p.size + ' / ' + (p.fstype || 'FS不明') + '）を削除します。\nこの操作は取り消せません。\n\n本当に実行しますか？')) return;
+    if (!confirm('最終確認です。\n' + p.path + ' の全データが失われます。実行してよろしいですか？')) return;
+    try {
+        setBusy(true);
+        const res = await fetch('/api/part/delete', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({part: sel.path})});
+        const data = await res.json();
+        setBusy(false);
+        if (!data.ok) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
+        notify(data.message, 'success');
+        sel = null;
+        await loadDevices();
+    } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function doCreate() {
+    if (!sel || sel.kind !== 'free') return;
+    const fstype = document.getElementById('mk-fstype').value;
+    const sizeMiB = parseFloat(document.getElementById('mk-size-num').value);
+    const label = document.getElementById('mk-label').value.trim();
+    if (!sizeMiB || sizeMiB < 16) { notify('サイズは16MiB以上を指定してください', 'error'); return; }
+    if (sizeMiB * 1048576 > sel.free.size_bytes) { notify('空き領域を超えています', 'error'); return; }
+    if (!confirm(sel.disk + ' の空き領域に ' + sizeMiB + ' MiB（' + fstype + '）を作成します。\nよろしいですか？')) return;
+    try {
+        setBusy(true);
+        const res = await fetch('/api/part/create', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({disk: sel.disk, fstype: fstype, size_mib: sizeMiB, label: label, start_bytes: sel.free.start_bytes})});
+        const data = await res.json();
+        setBusy(false);
+        if (!data.ok) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
+        notify(data.message, 'success');
+        sel = null;
+        await loadDevices();
+    } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function doDeleteTable() {
+    if (!sel || sel.kind !== 'free') return;
+    const d = devices.find(x => x.path === sel.disk);
+    const tableName = d && d.table ? d.table.toUpperCase() : 'パーティションテーブル';
+    if (!confirm(sel.disk + ' の' + tableName + 'パーティションテーブルを削除します。\n' +
+        'ディスクは未初期化状態に戻ります。\n\n本当に実行しますか？')) return;
+    if (!confirm('最終確認です。\n' + sel.disk + ' のテーブルを削除してよろしいですか？')) return;
+    try {
+        setBusy(true);
+        const res = await fetch('/api/part/dellabel', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({disk: sel.disk})});
+        const data = await res.json();
+        setBusy(false);
+        if (!data.ok) { notify('エラー: ' + (data.error || data.message || '失敗'), 'error'); return; }
+        notify(data.message, 'success');
+        sel = null;
+        await loadDevices();
+    } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function doCreateUninit() {
+    if (!sel || sel.kind !== 'uninit') return;
+    const table = document.getElementById('mk-table').value;
+    const fstype = document.getElementById('mk-fstype').value;
+    const sizeMiB = parseFloat(document.getElementById('mk-size-num').value);
+    const label = document.getElementById('mk-label').value.trim();
+    if (!sizeMiB || sizeMiB < 16) { notify('サイズは16MiB以上を指定してください', 'error'); return; }
+    const tableName = table === 'gpt' ? 'GPT' : 'MBR';
+    if (!confirm(sel.disk + ' を ' + tableName + ' で初期化し、' + sizeMiB + ' MiB（' + fstype + '）を作成します。\n' +
+        'ディスクの既存データは失われます。\n\n本当に実行しますか？')) return;
+    if (!confirm('最終確認です。\n' + sel.disk + ' を初期化してよろしいですか？')) return;
+    try {
+        setBusy(true);
+        const res = await fetch('/api/part/create', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({disk: sel.disk, fstype: fstype, size_mib: sizeMiB, label: label, table: table})});
+        const data = await res.json();
+        setBusy(false);
+        if (!data.ok) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
+        notify(data.message, 'success');
+        sel = null;
+        await loadDevices();
+    } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function doResize() {
+    if (!sel || sel.kind !== 'part') return;
+    const newMiB = parseFloat(document.getElementById('rs-size-num').value);
+    const curMiB = fmtMiB(sel.part.size_bytes);
+    if (!newMiB || newMiB < 16) { notify('サイズは16MiB以上を指定してください', 'error'); return; }
+    if (Math.abs(newMiB - curMiB) * 1048576 < 1048576) { notify('サイズに変化がありません', 'error'); return; }
+    const dir = newMiB > curMiB ? '拡大' : '縮小';
+    if (!confirm(sel.path + ' を ' + curMiB + ' MiB → ' + newMiB + ' MiB に' + dir + 'します。\n' +
+        (dir === '縮小' ? '縮小はデータを失う危険があります。\n' : '') + '\n本当に実行しますか？')) return;
+    try {
+        setBusy(true);
+        const res = await fetch('/api/part/resize', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({part: sel.path, new_size_mib: newMiB})});
+        const data = await res.json();
+        setBusy(false);
+        if (!data.ok) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
+        notify(data.message, 'success');
+        sel = null;
+        await loadDevices();
+    } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
+}
+
+loadAll();
+</script>
+</body>
+</html>
