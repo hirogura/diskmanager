@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>rsync ファイルコピー - Disk Manager v.0.0.1</title>
+<title>rsync ファイルコピー - Disk Manager v.0.0.2</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -512,6 +512,7 @@ async function mountDstDevice() {
         }
         notify('コピー先をマウントしました', 'success');
         checkDstExists();
+        if (document.getElementById('dst-base').value.trim()) loadDstList();
     } catch(e) { setMountMsg('dst', false, '通信エラー: ' + e.message); }
 }
 
@@ -582,6 +583,7 @@ async function mkdirDst() {
         if (!data.ok) { notify('エラー: ' + (data.error || '作成失敗'), 'error'); return; }
         notify('フォルダを作成しました', 'success');
         checkDstExists();
+        loadDstList();
     } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
 }
 
