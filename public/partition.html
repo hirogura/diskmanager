@@ -340,6 +340,19 @@ function adjacentFreeAfter(d, part) {
     return best;
 }
 
+function adjacentFreeBefore(d, part) {
+    // パーティション直前の連続した空き領域（前方移動用）
+    const startB = part.start_bytes || 0;
+    if (!startB) return null;
+    let best = null;
+    (d.free_spaces || []).forEach(f => {
+        if (f.end_bytes <= startB && f.end_bytes >= startB - 1048576 && f.start_bytes < startB) {
+            if (!best || f.size_bytes > best.size_bytes) best = f;
+        }
+    });
+    return best;
+}
+
 function renderOp() {
     const body = document.getElementById('op-body');
     if (!sel) {
@@ -381,6 +394,9 @@ function renderOp() {
         const adj = d ? adjacentFreeAfter(d, p) : null;
         const maxMiB = curMiB + (adj ? fmtMiB(adj.size_bytes) : 0);
         const canResize = maxMiB > minMiB;
+        const bef = d ? adjacentFreeBefore(d, p) : null;
+        const moveToMiB = bef ? Math.ceil(bef.start_bytes / 1048576) : 0;
+        const canMove = !!(bef && (p.start_bytes || 0) > 0 && moveToMiB * 1048576 < p.start_bytes);
         body.innerHTML =
             '<div class="op-info"><b>' + esc(p.path) + '</b>（' + esc(p.size) + ' / ' + esc(p.fstype || 'FS不明') + '）<br>' +
             '使用中: ' + esc(p.used || '不明') + (p.mountpoint ? ' ｜ マウント中: <b class="mount-warn">' + esc(p.mountpoint) + '</b>' : ' ｜ 未マウント') +
@@ -388,17 +404,21 @@ function renderOp() {
             (p.mountpoint
                 ? '<div class="btn-group"><button class="btn btn-secondary" onclick="doUnmount()" ' + (busy ? 'disabled' : '') + '>アンマウント</button></div>'
                 : '<div class="form-group" style="margin-top:12px"><label>新しいサイズ（MiB）<span style="color:#64748b">：現在 ' + curMiB + ' MiB' +
-                  (adj ? '／直後の空き ' + fmtMiB(adj.size_bytes) + ' MiB' : '／直後に空きなし') + '</span></label>' +
+                  (adj ? '／直後の空き ' + fmtMiB(adj.size_bytes) + ' MiB' : '／直後に空きなし') +
+                  (bef ? '／直前の空き ' + fmtMiB(bef.size_bytes) + ' MiB' : '') + '</span></label>' +
                   '<input type="range" id="rs-size" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" value="' + curMiB + '" oninput="document.getElementById(\'rs-size-num\').value=this.value">' +
                   '<input type="number" id="rs-size-num" value="' + curMiB + '" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" oninput="document.getElementById(\'rs-size\').value=this.value">' +
                   '<div class="help-text">使用中 ' + (p.used || '不明') + ' のため ' + minMiB + ' MiB 以上が必要です。小さくすると縮小、大きくすると拡大します（拡大には直後の空きが必要）。' +
-                  (!canResize ? '<br><b style="color:#f87171">拡大・縮小できる余地がありません。</b>' : '') + '</div></div>' +
+                  (!canResize ? '<br><b style="color:#f87171">拡大・縮小できる余地がありません。</b>' : '') +
+                  (canMove ? '<br>直前の空き先頭（' + moveToMiB + ' MiB付近）へ移動できます。' : '') + '</div></div>' +
                   '<div class="btn-group">' +
+                  '<button class="btn btn-secondary" onclick="doMoveForward()" ' + (busy || !canMove ? 'disabled' : '') + '>前方に移動</button>' +
                   '<button class="btn btn-primary" onclick="doResize()" ' + (busy || !canResize ? 'disabled' : '') + '>サイズ変更を実行</button>' +
                   '<button class="btn btn-danger" onclick="doDelete()" ' + (busy ? 'disabled' : '') + '>パーティションを削除</button>' +
                   '</div>' +
                   '<div class="note">※ xfs / btrfs は拡大のみ対応（FS拡張は別途案内します）。vfat の拡縮小は fatresize 未導入のため未対応です。<br>' +
-                  '※ 縮小はファイルシステム連動で行います（ext4 / NTFS）。処理には時間がかかる場合があります。</div>');
+                  '※ 縮小はファイルシステム連動で行います（ext4 / NTFS）。処理には時間がかかる場合があります。<br>' +
+                  '※ 前方移動はデータのブロックコピー＋テーブル更新で行います（サイズ・内容は不変、FS種別を問いません）。処理には時間がかかる場合があります。</div>');
     } else {
         const f = sel.free;
         const freeMiB = fmtMiB(f.size_bytes);
@@ -517,6 +537,24 @@ async function doCreateUninit() {
         setBusy(true);
         const res = await fetch('/api/part/create', {method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({disk: sel.disk, fstype: fstype, size_mib: sizeMiB, label: label, table: table})});
+        const data = await res.json();
+        setBusy(false);
+        if (!data.ok) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
+        notify(data.message, 'success');
+        sel = null;
+        await loadDevices();
+    } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function doMoveForward() {
+    if (!sel || sel.kind !== 'part') return;
+    const p = sel.part;
+    if (!confirm(p.path + '（' + p.size + '）を直前の空き領域の先頭へ移動します。\nサイズ・内容は変わりませんが、データのブロックコピーを伴います。\n完了まで画面を閉じずにお待ちください。\n\n実行しますか？')) return;
+    if (!confirm('最終確認です。\n移動中に電源断・再起動が起きるとデータが失われる可能性があります。実行してよろしいですか？')) return;
+    try {
+        setBusy(true);
+        const res = await fetch('/api/part/move', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({part: p.path})});
         const data = await res.json();
         setBusy(false);
         if (!data.ok) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }

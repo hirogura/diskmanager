@@ -12,7 +12,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.0.3"
+VERSION = "0.0.4"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2383,6 +2383,115 @@ def part_resize(part, new_size_bytes):
         return {"ok": False, "error": f"未対応のファイルシステムです: {fstype or '不明'}"}
 
 
+def part_move_forward(part):
+    """パーティションを直前の空き領域の先頭へ移動する（サイズ・内容は不変）。
+    データのブロックコピー＋パーティションテーブルの開始位置更新で行うため
+    ファイルシステム種別を問わない。移動先＜移動元のため前方コピーで安全。
+    先にデータを複写してからテーブルを書き換えるため、テーブル更新失敗時も
+    元位置のデータは残る"""
+    part = (part or "").strip()
+    if not PART_DEV_RE.match(part):
+        return {"ok": False, "error": f"不正なデバイス指定です: {part}"}
+    if not os.path.exists(part):
+        return {"ok": False, "error": f"デバイスが見つかりません: {part}"}
+    disk, err = _part_guard(part)
+    if err:
+        return {"ok": False, "error": err}
+    if get_dev_mountpoint(part):
+        return {"ok": False, "error": f"{part} はマウント中のため移動できません（先にアンマウントしてください）"}
+    try:
+        r = subprocess.run(["swapon", "--show=NAME", "--noheadings"],
+            capture_output=True, text=True, timeout=10)
+        if part in (r.stdout or ""):
+            return {"ok": False, "error": f"{part} は swap として使用中のため移動できません（swapoff 後に再試行）"}
+    except Exception:
+        pass
+    num = _part_number(disk, part)
+    if not num:
+        return {"ok": False, "error": f"パーティション番号を特定できません: {part}"}
+    _, bounds, frees = _parted_parse_free(disk)
+    if num not in bounds:
+        return {"ok": False, "error": f"パーティション情報を取得できません: {part}"}
+    start_b, end_b = bounds[num]
+    # parted の End は最終バイト（含む）のため +1 が実サイズ
+    cur_size = end_b - start_b + 1
+    if cur_size < MIB:
+        return {"ok": False, "error": f"{part} が小さすぎるため移動できません"}
+    # 直前に隣接する空き領域を探す
+    gap = None
+    for f in frees or []:
+        try:
+            fs, fe = int(f.get("start_bytes", 0)), int(f.get("end_bytes", 0))
+        except Exception:
+            continue
+        if fe <= start_b and fe >= start_b - MIB and fs < start_b:
+            if gap is None or int(f.get("size_bytes", 0)) > int(gap.get("size_bytes", 0)):
+                gap = f
+    if gap is None:
+        return {"ok": False, "error": f"{part} の直前に移動できる空き領域がありません"}
+    new_start = ((int(gap["start_bytes"]) + MIB - 1) // MIB) * MIB
+    if new_start >= start_b:
+        return {"ok": False, "error": f"{part} は既に前方に詰まっています（移動の余地がありません）"}
+    if start_b % 512 or new_start % 512 or cur_size % 512:
+        return {"ok": False, "error": "セクタ境界に収まらないため移動できません"}
+    if start_b % MIB == 0 and new_start % MIB == 0 and cur_size % MIB == 0:
+        bs = MIB
+    else:
+        bs = 512
+    skip, seek, count = start_b // bs, new_start // bs, cur_size // bs
+    # 移動前のFS識別子を記録（移動後の完全性確認用）
+    before_id = ""
+    try:
+        r = subprocess.run(["blkid", "-o", "value", "-s", "UUID", part],
+            capture_output=True, text=True, timeout=10)
+        before_id = (r.stdout or "").strip().split("\n")[0].strip()
+    except Exception:
+        pass
+    # 1) データのブロックコピー
+    dd_timeout = max(600, min(7200, cur_size // (10 * MIB) + 300))
+    rc, out = _run_cmd(["dd", f"if={disk}", f"of={disk}", f"bs={bs}",
+        f"skip={skip}", f"seek={seek}", f"count={count}", "conv=notrunc,fsync"],
+        timeout=dd_timeout)
+    if rc != 0:
+        return {"ok": False, "error": f"データの移動に失敗しました: {out[:300]}"}
+    # 2) パーティションテーブルの開始位置を更新（sfdisk dump→apply）
+    rc, dump = _run_cmd(["sfdisk", "--dump", disk], timeout=30)
+    if rc != 0:
+        return {"ok": False, "error": f"テーブル読込に失敗しました: {dump[:200]}（データは元の位置に残っています）"}
+    new_start_sec = new_start // 512
+    lines = []
+    found = False
+    for line in dump.split("\n"):
+        s = line.strip()
+        if s.startswith(part + " ") or s.startswith(part + ":") or s.startswith(part + "\t"):
+            nline, n = re.subn(r"start\s*=\s*\d+", f"start={new_start_sec}", line, count=1)
+            if n:
+                line = nline
+                found = True
+        lines.append(line)
+    if not found:
+        return {"ok": False, "error": f"テーブル内に {part} が見つかりません（データは元の位置に残っています）"}
+    rc, out = _run_cmd(["sfdisk", "--force", disk], timeout=120,
+        input_text="\n".join(lines) + "\n")
+    if rc != 0:
+        return {"ok": False, "error": f"テーブル更新に失敗しました: {out[:300]}（データは新旧両位置にあります。手動で確認してください）"}
+    _part_refresh(disk)
+    _, bounds2, _ = _parted_parse_free(disk)
+    if bounds2.get(num, (None, None))[0] != new_start:
+        return {"ok": False, "error": "移動後の位置を確認できませんでした（テーブルを確認してください）"}
+    if before_id:
+        try:
+            r = subprocess.run(["blkid", "-o", "value", "-s", "UUID", part],
+                capture_output=True, text=True, timeout=10)
+            after_id = (r.stdout or "").strip().split("\n")[0].strip()
+            if after_id != before_id:
+                return {"ok": False, "error": "移動後の識別子が一致しません（データを確認してください）"}
+        except Exception:
+            pass
+    return {"ok": True,
+        "message": f"{part} を前方に移動しました（開始 {start_b // MIB}MiB → {new_start // MIB}MiB、サイズ {_fmt_bytes(cur_size)} 不変）"}
+
+
 def _run_part_install():
     """parted＋FS操作ツールをバックグラウンドで導入する"""
     global part_install_running
@@ -2847,6 +2956,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p.path == "/api/part/mklabel": self._handle_part_mklabel(data)
         elif p.path == "/api/part/dellabel": self._handle_part_dellabel(data)
         elif p.path == "/api/part/resize": self._handle_part_resize(data)
+        elif p.path == "/api/part/move": self._handle_part_move(data)
         else: self._json({"error": "not found"}, 404)
 
     def do_OPTIONS(self):
@@ -3456,6 +3566,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 new_size = 0
         res = part_resize(part, new_size)
+        self._json(res, 200 if res.get("ok") else 400)
+
+    def _handle_part_move(self, data):
+        err = self._part_busy_guard()
+        if err:
+            self._json({"error": err}); return
+        part = ((data.get("part") or data.get("path") or "")).strip()
+        if not part:
+            self._json({"error": "パーティションを指定してください"}); return
+        res = part_move_forward(part)
         self._json(res, 200 if res.get("ok") else 400)
 
     def _handle_rsync_install(self):
