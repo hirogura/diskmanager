@@ -4,11 +4,11 @@
 ddrescueGUI の機能はそのままに、UI をサイドバー切替式に作り直したものです。
 
 - ツール名: **Disk Manager**
-- バージョン: **v.0.0.4**
+- バージョン: **v.0.0.5**
 - 動作環境: Ubuntu / Debian / CachyOS（Arch 系含む）（systemd を使用）
 - デフォルトポート: **3361**（`127.0.0.1` のみにバインド。LAN には非公開）
 - 公開方法: Tailscale Serve による HTTPS 化を想定（Tailnet 内のみ公開）
-- 使用ツール: `ddrescue`（Debian では `gddrescue`）, `smartmontools`, `lsblk` / `blkid`（Arch 系では `util-linux`）, `file`, `git`, `clonezilla`, `partclone`, `rsync`, `parted`, `dosfstools`, `ntfs-3g`, `exfatprogs`, `xfsprogs`, `btrfs-progs`, `e2fsprogs`
+- 使用ツール: `ddrescue`（Debian では `gddrescue`）, `smartmontools`, `lsblk` / `blkid`（Arch 系では `util-linux`）, `file`, `git`, `clonezilla`, `partclone`, `rsync`, `parted`, `dosfstools`, `ntfs-3g`, `exfatprogs`, `xfsprogs`, `btrfs-progs`, `e2fsprogs`, `hdparm`, `jq`, `nvme-cli`
 - ファビコンは ddrescueGUI と同じものを使用しています。
 
 ## 画面構成
@@ -55,8 +55,25 @@ OS を自動判定し、Debian / Ubuntu 系では `apt-get`、CachyOS / Arch 系
 
 | ディストリビューション | パッケージマネージャ | 導入パッケージ |
 | --- | --- | --- |
-| Debian / Ubuntu | `apt-get` | `python3`, `gddrescue`, `smartmontools`, `fdisk`, `git`, `clonezilla`, `partclone`, `rsync`, `parted`, `dosfstools`, `ntfs-3g`, `exfatprogs`, `xfsprogs`, `btrfs-progs`, `e2fsprogs` |
-| CachyOS / Arch 系 | `pacman` | `python`, `ddrescue`, `smartmontools`, `util-linux`, `file`, `git`, `clonezilla`, `partclone`, `rsync`, `parted`, `dosfstools`, `ntfs-3g`, `exfatprogs`, `xfsprogs`, `btrfs-progs`, `e2fsprogs` |
+| Debian / Ubuntu | `apt-get` | `python3`, `gddrescue`, `smartmontools`, `fdisk`, `git`, `clonezilla`, `partclone`, `rsync`, `parted`, `dosfstools`, `ntfs-3g`, `exfatprogs`, `xfsprogs`, `btrfs-progs`, `e2fsprogs`, `hdparm`, `jq`, `nvme-cli` |
+| CachyOS / Arch 系 | `pacman` | `python`, `ddrescue`, `smartmontools`, `util-linux`, `file`, `git`, `clonezilla`, `partclone`, `rsync`, `parted`, `dosfstools`, `ntfs-3g`, `exfatprogs`, `xfsprogs`, `btrfs-progs`, `e2fsprogs`, `hdparm`, `jq`, `nvme-cli` |
+
+### CachyOS でのインストール
+
+CachyOS（Arch 系）でも同じ手順でインストールできます。OS 判定は `/etc/os-release`（`ID=cachyos` / `ID_LIKE=arch`）と `pacman` の有無で行い、依存パッケージを `pacman` で導入します。
+
+```bash
+sudo wget -O /tmp/diskmanager-install.sh \
+  https://raw.githubusercontent.com/hirogura/diskmanager/main/install.sh
+sudo bash /tmp/diskmanager-install.sh
+```
+
+CachyOS 固有の注意事項:
+
+- パッケージ名の読み替えは自動です（例: `gddrescue` → `ddrescue`、`fdisk` → `util-linux`）。すべて Arch 公式リポジトリ（core / extra）のパッケージのため、AUR ヘルパーは不要です。
+- systemd サービス名・ポート（3361）・Tailscale Serve の設定は Ubuntu と同じです。
+- `vfat` の拡縮小に使う `fatresize` は Arch 公式リポジトリに無いため導入しません（vfat のリサイズは未対応のままです）。
+- アプリ内のツール自動導入（Clonezilla / partclone / rsync / parted 系）も `pacman` で行われます。
 
 Tailscale が導入済みの環境では、インストーラが自動で Tailscale Serve を設定し、
 Tailnet 内のみ HTTPS（`https://<マシン名>.<tailnet>.ts.net:3361`）で公開します。
@@ -131,7 +148,7 @@ sudo tailscale serve --https=3361 off
 
 ```
  /opt/diskmanager/
- ├── server.py            # Web サーバー本体（ポート 3361、バージョン 0.0.4）
+ ├── server.py            # Web サーバー本体（ポート 3361、バージョン 0.0.5）
  ├── public/index.html    # サイドバー＋右ペインのシェル
  ├── public/app.js        # ページ切替・アップデート／再起動の待機処理
  ├── public/app.css       # シェル用スタイル

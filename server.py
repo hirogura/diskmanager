@@ -12,7 +12,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.0.4"
+VERSION = "0.0.5"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2577,7 +2577,7 @@ def _run_clone_install():
             is_arch = ("arch" in os_like) or os_id in ("arch", "cachyos") or \
                 (shutil.which("pacman") and not shutil.which("apt-get"))
             if is_arch:
-                cmd = ["pacman", "-Sy", "--noconfirm", "--needed", "clonezilla", "partclone"]
+                cmd = ["pacman", "-Sy", "--noconfirm", "--needed", "clonezilla", "partclone", "jq"]
             else:
                 # Debian/Ubuntu 系は事前に apt-get update してから導入
                 f.write("$ apt-get update\n")
@@ -2585,7 +2585,7 @@ def _run_clone_install():
                 r0 = subprocess.run(["apt-get", "update"], stdout=f, stderr=subprocess.STDOUT, timeout=600)
                 if r0.returncode != 0:
                     f.write(f"apt-get update failed (code={r0.returncode})\n")
-                cmd = ["apt-get", "install", "-y", "clonezilla", "partclone"]
+                cmd = ["apt-get", "install", "-y", "clonezilla", "partclone", "jq"]
             f.write(f"$ {' '.join(cmd)}\n")
             f.flush()
             r = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, timeout=3600)
