@@ -12,7 +12,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.0.7"
+VERSION = "0.0.8"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2698,6 +2698,163 @@ def part_move_forward(part):
         "message": f"{part} を前方に移動しました（開始 {start_b // MIB}MiB → {new_start // MIB}MiB、サイズ {_fmt_bytes(cur_size)} 不変）"}
 
 
+def part_move_to(part, new_start_bytes):
+    """パーティションをサイズ不変のまま任意位置へ移動する（前後両方向）。
+    前方（移動先＜移動元）は一括コピー、後方（移動先＞移動元）は
+    末尾からの逆順チャンクコピーで行う。逆順＋チャンク≦移動幅により
+    重なりコピーでも未読領域を壊さない。終了位置が変わるため
+    後続パーティションに重ならないよう直後の空き内かを検証する。
+    ファイルシステム種別を問わない（サイズ不変のためFS作業なし）"""
+    part = (part or "").strip()
+    try:
+        new_start_bytes = int(new_start_bytes or 0)
+    except Exception:
+        return {"ok": False, "error": "開始位置が不正です"}
+    if not PART_DEV_RE.match(part):
+        return {"ok": False, "error": f"不正なデバイス指定です: {part}"}
+    if not os.path.exists(part):
+        return {"ok": False, "error": f"デバイスが見つかりません: {part}"}
+    disk, err = _part_guard(part)
+    if err:
+        return {"ok": False, "error": err}
+    if get_dev_mountpoint(part):
+        return {"ok": False, "error": f"{part} はマウント中のため移動できません（先にアンマウントしてください）"}
+    try:
+        r = subprocess.run(["swapon", "--show=NAME", "--noheadings"],
+            capture_output=True, text=True, timeout=10)
+        if part in (r.stdout or ""):
+            return {"ok": False, "error": f"{part} は swap として使用中のため移動できません（swapoff 後に再試行）"}
+    except Exception:
+        pass
+    if shutil.which("sfdisk") is None:
+        return {"ok": False, "error": "sfdisk が利用できません（先にツールをインストールしてください）"}
+    num = _part_number(disk, part)
+    if not num:
+        return {"ok": False, "error": f"パーティション番号を特定できません: {part}"}
+    _, bounds, frees = _parted_parse_free(disk)
+    if num not in bounds:
+        return {"ok": False, "error": f"パーティション情報を取得できません: {part}"}
+    start_b, _end_b = bounds[num]
+    # 正確な現サイズ（ブロックデバイス基準。終了位置は start+psize で扱う）
+    psize = get_device_size_bytes(part)
+    if psize < MIB:
+        return {"ok": False, "error": f"{part} のサイズを取得できません"}
+    end_excl = start_b + psize
+    new_start = (int(new_start_bytes) // MIB) * MIB
+    if new_start == start_b:
+        return {"ok": False, "error": "位置に変化がありません"}
+    if start_b % 512 or new_start % 512 or psize % 512:
+        return {"ok": False, "error": "セクタ境界に収まらないため移動できません"}
+    if new_start < start_b:
+        # --- 前方：直前の隣接空き内であること（前方移動と同条件） ---
+        gap = None
+        for f in frees or []:
+            try:
+                fs, fe = int(f.get("start_bytes", 0)), int(f.get("end_bytes", 0))
+            except Exception:
+                continue
+            if fe <= start_b and fe >= start_b - MIB and fs < start_b:
+                if gap is None or int(f.get("size_bytes", 0)) > int(gap.get("size_bytes", 0)):
+                    gap = f
+        if gap is None:
+            return {"ok": False, "error": f"{part} の直前に移動できる空き領域がありません"}
+        if new_start < int(gap.get("start_bytes", 0)):
+            return {"ok": False, "error": f"直前の空き領域（{_fmt_bytes(int(gap.get('size_bytes', 0)))}）を超えています"}
+        direction = "前方"
+    else:
+        # --- 後方：移動後の末尾が直後の隣接空き内に収まること ---
+        new_end_excl = new_start + psize
+        gap = None
+        for f in frees or []:
+            try:
+                fs, fe = int(f.get("start_bytes", 0)), int(f.get("end_bytes", 0))
+            except Exception:
+                continue
+            # 現在の末尾付近から始まる空きで、移動後の末尾を含むもの
+            if fs <= end_excl + MIB and new_end_excl <= fe + 1 and fs < new_end_excl:
+                if gap is None or int(f.get("size_bytes", 0)) > int(gap.get("size_bytes", 0)):
+                    gap = f
+        if gap is None:
+            return {"ok": False, "error": f"{part} の直後に移動できる空き領域がありません（移動後の末尾が空きに収まりません）"}
+        direction = "後方"
+    if start_b % MIB == 0 and new_start % MIB == 0 and psize % MIB == 0:
+        bs = MIB
+    else:
+        bs = 512
+    # 移動前のFS識別子を記録（移動後の完全性確認用）
+    before_id = ""
+    try:
+        r = subprocess.run(["blkid", "-o", "value", "-s", "UUID", part],
+            capture_output=True, text=True, timeout=10)
+        before_id = (r.stdout or "").strip().split("\n")[0].strip()
+    except Exception:
+        pass
+    dd_timeout = max(600, min(7200, psize // (10 * MIB) + 300))
+    if new_start < start_b:
+        # 1) 前方コピー（移動先＜移動元のため一括で安全）
+        skip, seek, count = start_b // bs, new_start // bs, psize // bs
+        rc, out = _run_cmd(["dd", f"if={disk}", f"of={disk}", f"bs={bs}",
+            f"skip={skip}", f"seek={seek}", f"count={count}", "conv=notrunc,fsync"],
+            timeout=dd_timeout)
+        if rc != 0:
+            return {"ok": False, "error": f"データの移動に失敗しました: {out[:300]}"}
+    else:
+        # 1) 後方コピー（末尾から逆順にチャンク複写。チャンク≦移動幅のため安全）
+        shift = new_start - start_b
+        chunk = min(64 * MIB, shift)
+        chunk -= chunk % bs
+        if chunk < bs:
+            return {"ok": False, "error": "移動幅が小さすぎるため安全に複写できません"}
+        nchunks = (psize + chunk - 1) // chunk
+        for i in range(nchunks - 1, -1, -1):
+            off = i * chunk
+            this_count = min(chunk, psize - off) // bs
+            if this_count <= 0:
+                continue
+            rc, out = _run_cmd(["dd", f"if={disk}", f"of={disk}", f"bs={bs}",
+                f"skip={(start_b + off) // bs}", f"seek={(new_start + off) // bs}",
+                f"count={this_count}", "conv=notrunc,fsync"],
+                timeout=dd_timeout)
+            if rc != 0:
+                return {"ok": False, "error": f"データの移動に失敗しました（逆順複写 {nchunks - i}/{nchunks}）: {out[:300]}"}
+    # 2) パーティションテーブルの開始位置を更新（サイズ不変＝終了位置は連動）
+    new_start_sec = new_start // 512
+    rc, dump = _run_cmd(["sfdisk", "--dump", disk], timeout=30)
+    if rc != 0:
+        return {"ok": False, "error": f"テーブル読込に失敗しました: {dump[:200]}（データは元の位置に残っています）"}
+    lines = []
+    found = False
+    for line in dump.split("\n"):
+        s = line.strip()
+        if s.startswith(part + " ") or s.startswith(part + ":") or s.startswith(part + "\t"):
+            nline, n = re.subn(r"start\s*=\s*\d+", f"start={new_start_sec}", line, count=1)
+            if n:
+                line = nline
+                found = True
+        lines.append(line)
+    if not found:
+        return {"ok": False, "error": f"テーブル内に {part} が見つかりません（データは元の位置に残っています）"}
+    rc, out = _run_cmd(["sfdisk", "--force", disk], timeout=120,
+        input_text="\n".join(lines) + "\n")
+    if rc != 0:
+        return {"ok": False, "error": f"テーブル更新に失敗しました: {out[:300]}（データは新旧両位置にあります。手動で確認してください）"}
+    _part_refresh(disk)
+    _, bounds2, _ = _parted_parse_free(disk)
+    if bounds2.get(num, (None, None))[0] != new_start:
+        return {"ok": False, "error": "移動後の位置を確認できませんでした（テーブルを確認してください）"}
+    if before_id:
+        try:
+            r = subprocess.run(["blkid", "-o", "value", "-s", "UUID", part],
+                capture_output=True, text=True, timeout=10)
+            after_id = (r.stdout or "").strip().split("\n")[0].strip()
+            if after_id != before_id:
+                return {"ok": False, "error": "移動後の識別子が一致しません（データを確認してください）"}
+        except Exception:
+            pass
+    return {"ok": True,
+        "message": f"{part} を{direction}に移動しました（開始 {start_b // MIB}MiB → {new_start // MIB}MiB、サイズ {_fmt_bytes(psize)} 不変）"}
+
+
 def _run_part_install():
     """parted＋FS操作ツールをバックグラウンドで導入する"""
     global part_install_running
@@ -3164,6 +3321,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p.path == "/api/part/resize": self._handle_part_resize(data)
         elif p.path == "/api/part/expand_front": self._handle_part_expand_front(data)
         elif p.path == "/api/part/move": self._handle_part_move(data)
+        elif p.path == "/api/part/move_to": self._handle_part_move_to(data)
         else: self._json({"error": "not found"}, 404)
 
     def do_OPTIONS(self):
@@ -3799,6 +3957,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not part:
             self._json({"error": "パーティションを指定してください"}); return
         res = part_move_forward(part)
+        self._json(res, 200 if res.get("ok") else 400)
+
+    def _handle_part_move_to(self, data):
+        err = self._part_busy_guard()
+        if err:
+            self._json({"error": err}); return
+        part = ((data.get("part") or data.get("path") or "")).strip()
+        if not part:
+            self._json({"error": "パーティションを指定してください"}); return
+        new_start = data.get("new_start_bytes")
+        if new_start is None and data.get("new_start_mib") is not None:
+            try:
+                new_start = int(float(data.get("new_start_mib")) * MIB)
+            except Exception:
+                new_start = 0
+        res = part_move_to(part, new_start)
         self._json(res, 200 if res.get("ok") else 400)
 
     def _handle_rsync_install(self):

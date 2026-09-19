@@ -48,6 +48,11 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
 .resize-tip{position:fixed;z-index:2000;pointer-events:none;background:#0f172a;border:1px solid #38bdf8;border-radius:6px;padding:4px 10px;font-size:0.8em;color:#e2e8f0;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.5)}
 /* ドラッグ中に挿入される空きプレビュー（後続パーティションは動かさない） */
 .seg.preview-free{outline:2px dashed #38bdf8;outline-offset:-2px}
+/* 選択中の移動可能パーティション本体。つまんでドラッグで位置変更 */
+.seg.movable{cursor:grab;touch-action:none}
+.pbar.moving{user-select:none}
+.pbar.moving .seg{cursor:grabbing !important}
+.pbar.moving .resize-handle{cursor:ew-resize !important}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:0.78em;color:#94a3b8}
 .legend span{display:flex;align-items:center;gap:5px}
 .sw{display:inline-block;width:12px;height:12px;border-radius:3px}
@@ -295,9 +300,16 @@ function renderDisk(d) {
                         'ontouchstart="resizeDragStart(event,\'' + esc(d.path) + '\',\'' + esc(p.path) + '\',\'start\')"></div>';
                 }
             }
-            bar += '<div class="seg' + selected + '" style="width:' + pct + '%;background:' + fsColor(p.fstype) + '" ' +
+            // 選択中の移動可能パーティションは本体ドラッグで位置変更できる
+            const minfoSeg = isSel ? moveRangeInfo(d, p) : null;
+            const movableCls = minfoSeg ? ' movable' : '';
+            const moveHandlers = minfoSeg ?
+                ' onmousedown="moveDragStart(event,\'' + esc(d.path) + '\',\'' + esc(p.path) + '\')" ' +
+                'ontouchstart="moveDragStart(event,\'' + esc(d.path) + '\',\'' + esc(p.path) + '\')"' : '';
+            const segTip = segTitle(p) + (minfoSeg ? '［本体ドラッグで位置変更可］' : '');
+            bar += '<div class="seg' + selected + movableCls + '" style="width:' + pct + '%;background:' + fsColor(p.fstype) + '" ' +
                 'data-part="' + esc(p.path) + '" data-bytes="' + (p.size_bytes || 0) + '" ' +
-                'title="' + esc(segTitle(p)) + '" onclick="selectSeg(\'' + esc(d.path) + '\',\'part\',\'' + esc(p.path) + '\')">' +
+                'title="' + esc(segTip) + '" onclick="selectSeg(\'' + esc(d.path) + '\',\'part\',\'' + esc(p.path) + '\')"' + moveHandlers + '>' +
                 (usePct ? '<div class="used" style="width:' + usePct + '%"></div>' : '') +
                 '<div class="seg-label">' + esc(short) + '</div>' + handle + '</div>';
         } else {
@@ -397,6 +409,25 @@ function adjacentFreeBefore(d, part) {
     return best;
 }
 
+// 移動（サイズ不変）の可動範囲。前後に動ける場合のみオブジェクト、不可なら null
+function moveRangeInfo(d, part) {
+    if (!d || !part || d.is_system || part.mountpoint || busy) return null;
+    if (!(part.start_bytes > 0) || !((part.size_bytes || 0) >= 1048576)) return null;
+    const curStartMiB = Math.floor(part.start_bytes / 1048576);
+    let minStartMiB = curStartMiB, maxStartMiB = curStartMiB;
+    const bef = adjacentFreeBefore(d, part);
+    if (bef) minStartMiB = Math.ceil(bef.start_bytes / 1048576);
+    const aft = adjacentFreeAfter(d, part);
+    if (aft) maxStartMiB = Math.floor((aft.end_bytes + 1 - part.size_bytes) / 1048576);
+    minStartMiB = Math.min(minStartMiB, curStartMiB);
+    maxStartMiB = Math.max(maxStartMiB, curStartMiB);
+    if (!(maxStartMiB > minStartMiB)) return null;
+    return {curStartMiB: curStartMiB, minStartMiB: minStartMiB, maxStartMiB: maxStartMiB,
+        curStartBytes: part.start_bytes, curBytes: part.size_bytes,
+        totalBytes: d.size_bytes || 1,
+        prevFreeStart: bef ? bef.start_bytes : null, prevFreeBytes: bef ? bef.size_bytes : 0,
+        nextFreeStart: aft ? aft.start_bytes : null, nextFreeBytes: aft ? aft.size_bytes : 0};
+}
 // 直前の空きへの前方拡大余地。前方拡大できる場合のみオブジェクト、不可なら null
 // （後方拡大と同方針：swap等の未対応FS、マウント中、空きなしは不可）
 function frontExpandInfo(d, part) {
@@ -511,9 +542,73 @@ function resizeDragStart(e, disk, partPath, side) {
     window.addEventListener('touchcancel', resizeDragEnd);
 }
 
+// パーティション本体ドラッグによる位置変更（サイズ不変）。選択中のもののみ対象
+function moveDragStart(e, disk, partPath) {
+    if (busy) return;
+    if (e.cancelable === false) return;
+    if (e.type === 'mousedown' && e.button !== 0) return;
+    const d = devices.find(x => x.path === disk);
+    if (!d) return;
+    const p = (d.partitions || []).find(x => x.path === partPath);
+    if (!p) return;
+    // 未選択パーティションはクリックで選択させる（ドラッグ開始しない）
+    if (!(sel && sel.kind === 'part' && sel.path === p.path)) return;
+    const minfo = moveRangeInfo(d, p);
+    if (!minfo) return;
+    const seg = (e.target.closest ? e.target.closest('.seg') : null);
+    const pbar = (e.target.closest ? e.target.closest('.pbar') : null);
+    if (!seg || !pbar) return;
+    const barRect = pbar.getBoundingClientRect();
+    if (!barRect.width) return;
+    e.preventDefault();
+    // 前回ドラッグのプレビューが残っていれば取り除き、幅を実測値に戻す
+    pbar.querySelectorAll('.preview-free').forEach(el => el.remove());
+    seg.style.width = Math.max(0.6, minfo.curBytes / minfo.totalBytes * 100) + '%';
+    // 前後の空きセグ（表示分。増減はここで吸収し、他のパーティションは動かさない）
+    let prevSeg = null, prevOrigBytes = 0, nextSeg = null, nextOrigBytes = 0;
+    if (minfo.prevFreeStart != null) {
+        const found = pbar.querySelector('[data-free="' + minfo.prevFreeStart + '"]');
+        if (found) {
+            prevSeg = found;
+            prevOrigBytes = minfo.prevFreeBytes || 0;
+            prevSeg.style.width = Math.max(0.6, prevOrigBytes / minfo.totalBytes * 100) + '%';
+        }
+    }
+    if (minfo.nextFreeStart != null) {
+        const found = pbar.querySelector('[data-free="' + minfo.nextFreeStart + '"]');
+        if (found) {
+            nextSeg = found;
+            nextOrigBytes = minfo.nextFreeBytes || 0;
+            nextSeg.style.width = Math.max(0.6, nextOrigBytes / minfo.totalBytes * 100) + '%';
+        }
+    }
+    const pt = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    const tip = document.createElement('div');
+    tip.className = 'resize-tip';
+    document.body.appendChild(tip);
+    resizeDrag = {side: 'move', disk: disk, partPath: partPath, startX: pt.clientX,
+        barWidth: barRect.width, totalBytes: minfo.totalBytes,
+        curBytes: minfo.curBytes, curStartBytes: minfo.curStartBytes,
+        minStartMiB: minfo.minStartMiB, maxStartMiB: minfo.maxStartMiB,
+        newStartMiB: minfo.curStartMiB,
+        seg: seg, pbar: pbar, tip: tip, moved: false,
+        prevSeg: prevSeg, prevOrigBytes: prevOrigBytes,
+        nextSeg: nextSeg, nextOrigBytes: nextOrigBytes, previewFree: null};
+    pbar.classList.add('moving');
+    updateResizeTip(pt.clientX, pt.clientY);
+    window.addEventListener('mousemove', resizeDragMove, {passive: false});
+    window.addEventListener('mouseup', resizeDragEnd);
+    window.addEventListener('touchmove', resizeDragMove, {passive: false});
+    window.addEventListener('touchend', resizeDragEnd);
+    window.addEventListener('touchcancel', resizeDragEnd);
+}
+
 function updateResizeTip(clientX, clientY) {
     if (!resizeDrag) return;
-    if (resizeDrag.side === 'start') {
+    if (resizeDrag.side === 'move') {
+        const sizeMiB = Math.round(resizeDrag.curBytes / 1048576);
+        resizeDrag.tip.textContent = '移動 → 開始 ' + resizeDrag.newStartMiB + ' MiB（サイズ ' + sizeMiB + ' MiB不変）';
+    } else if (resizeDrag.side === 'start') {
         const sizeMiB = Math.round((resizeDrag.curBytes +
             (resizeDrag.curStartBytes - resizeDrag.newStartMiB * 1048576)) / 1048576);
         resizeDrag.tip.textContent = '開始 ' + resizeDrag.newStartMiB + ' MiB（サイズ ' + sizeMiB + ' MiB）';
@@ -525,8 +620,64 @@ function updateResizeTip(clientX, clientY) {
     resizeDrag.tip.style.top = (clientY + 12) + 'px';
 }
 
+// 移動プレビュー用の仮空きセグ（表示上の空きが無い側への微移動時の予備）
+function moveEnsurePreviewFree(before, freeBytes) {
+    if (!resizeDrag || !resizeDrag.seg) return;
+    const total = resizeDrag.totalBytes;
+    let pf = resizeDrag.previewFree;
+    if (!pf || !pf.isConnected) {
+        pf = document.createElement('div');
+        pf.className = 'seg free preview-free';
+        pf.innerHTML = '<div class="seg-label"></div>';
+        if (before) resizeDrag.seg.before(pf);
+        else resizeDrag.seg.after(pf);
+        resizeDrag.previewFree = pf;
+    }
+    pf.style.width = Math.max(0.6, freeBytes / total * 100) + '%';
+    const label = pf.querySelector('.seg-label');
+    if (label) label.textContent = '空き ' + fmtBytes(freeBytes);
+    pf.title = '移動で生じる空き ' + fmtBytes(freeBytes) + '（プレビュー）';
+}
+
 function applyResizeDragValue() {
     if (!resizeDrag) return;
+    if (resizeDrag.side === 'move') {
+        // 本体移動：開始位置の入力と、前後空きの幅をプレビューする
+        // （サイズ不変・他のパーティションは動かさない）
+        const range = document.getElementById('mv-start');
+        const num = document.getElementById('mv-start-num');
+        if (range) { range.value = resizeDrag.newStartMiB; }
+        if (num) { num.value = resizeDrag.newStartMiB; }
+        if (resizeDrag.seg && resizeDrag.totalBytes > 0) {
+            const newStart = resizeDrag.newStartMiB * 1048576;
+            const shift = newStart - resizeDrag.curStartBytes; // +:後方 -:前方
+            const total = resizeDrag.totalBytes;
+            resizeDrag.seg.style.width = Math.max(0.6, resizeDrag.curBytes / total * 100) + '%';
+            if (resizeDrag.prevSeg) {
+                const freeBytes = Math.max(0, resizeDrag.prevOrigBytes + shift);
+                resizeDrag.prevSeg.style.width = Math.max(0.6, freeBytes / total * 100) + '%';
+                const label = resizeDrag.prevSeg.querySelector('.seg-label');
+                if (label) label.textContent = '空き ' + fmtBytes(freeBytes);
+                resizeDrag.prevSeg.title = '空き領域 ' + fmtBytes(freeBytes) + '（プレビュー）';
+            } else if (shift < -524288) {
+                moveEnsurePreviewFree(true, -shift);
+            }
+            if (resizeDrag.nextSeg) {
+                const freeBytes = Math.max(0, resizeDrag.nextOrigBytes - shift);
+                resizeDrag.nextSeg.style.width = Math.max(0.6, freeBytes / total * 100) + '%';
+                const label = resizeDrag.nextSeg.querySelector('.seg-label');
+                if (label) label.textContent = '空き ' + fmtBytes(freeBytes);
+                resizeDrag.nextSeg.title = '空き領域 ' + fmtBytes(freeBytes) + '（プレビュー）';
+            } else if (shift > 524288) {
+                moveEnsurePreviewFree(false, shift);
+            }
+            if (Math.abs(shift) <= 524288 && resizeDrag.previewFree) {
+                resizeDrag.previewFree.remove();
+                resizeDrag.previewFree = null;
+            }
+        }
+        return;
+    }
     if (resizeDrag.side === 'start') {
         // 左端：開始位置の入力と、対象＋直前空きの幅をプレビューする
         // （終了位置・後続パーティションは不変）
@@ -598,10 +749,11 @@ function resizeDragMove(e) {
     const pt = (e.touches && e.touches[0]) ? e.touches[0] : e;
     const dx = pt.clientX - resizeDrag.startX;
     if (Math.abs(dx) > 2) resizeDrag.moved = true;
-    if (resizeDrag.side === 'start') {
-        // 左へドラッグするほど開始位置が前進（拡大）。現在位置より後ろにはできない
+    if (resizeDrag.side === 'move' || resizeDrag.side === 'start') {
+        // 移動・前方拡大：左へドラッグするほど開始位置が前進する
+        // （移動は現在位置より前後どちらにも可、前方拡大は前進のみ）
         let newStart = resizeDrag.curStartBytes + dx / resizeDrag.barWidth * resizeDrag.totalBytes;
-        newStart = Math.min(resizeDrag.maxStartBytes, Math.max(resizeDrag.minStartMiB * 1048576, newStart));
+        newStart = Math.min(resizeDrag.maxStartMiB * 1048576, Math.max(resizeDrag.minStartMiB * 1048576, newStart));
         resizeDrag.newStartMiB = Math.round(newStart / 1048576);
         resizeDrag.newStartMiB = Math.min(resizeDrag.maxStartMiB, Math.max(resizeDrag.minStartMiB, resizeDrag.newStartMiB));
         updateResizeTip(pt.clientX, pt.clientY);
@@ -624,7 +776,7 @@ function resizeDragEnd() {
     const tip = resizeDrag.tip;
     const pbar = resizeDrag.pbar;
     if (tip) tip.remove();
-    if (pbar) pbar.classList.remove('dragging');
+    if (pbar) { pbar.classList.remove('dragging'); pbar.classList.remove('moving'); }
     if (resizeDrag.seg) resizeDrag.seg.querySelectorAll('.resize-handle.dragging').forEach(h => h.classList.remove('dragging'));
     const moved = resizeDrag.moved;
     resizeDrag = null;
@@ -693,6 +845,15 @@ function renderOp() {
             '<div class="btn-group">' +
             '<button class="btn btn-primary" onclick="doExpandFront()" ' + (busy ? 'disabled' : '') + '>前方に拡大を実行</button>' +
             '</div>' : '';
+        const minfo = d ? moveRangeInfo(d, p) : null;
+        const moveBlock = (!p.mountpoint && minfo) ?
+            '<div class="form-group" style="margin-top:12px"><label>位置・開始位置（MiB）<span style="color:#64748b">：現在 ' + minfo.curStartMiB + ' MiB／可動範囲 ' + minfo.minStartMiB + '〜' + minfo.maxStartMiB + ' MiB（サイズ不変）</span></label>' +
+            '<input type="range" id="mv-start" min="' + minfo.minStartMiB + '" max="' + minfo.maxStartMiB + '" value="' + minfo.curStartMiB + '" oninput="document.getElementById(\'mv-start-num\').value=this.value">' +
+            '<input type="number" id="mv-start-num" value="' + minfo.curStartMiB + '" min="' + minfo.minStartMiB + '" max="' + minfo.maxStartMiB + '" oninput="document.getElementById(\'mv-start\').value=this.value">' +
+            '<div class="help-text">サイズはそのまま位置だけを変更します（前後どちらにも移動可）。選択中のグラフ本体をつまんでドラッグでも移動できます。確定には下の「位置を変更」を押してください。</div></div>' +
+            '<div class="btn-group">' +
+            '<button class="btn btn-primary" onclick="doMoveTo()" ' + (busy ? 'disabled' : '') + '>位置を変更（移動）を実行</button>' +
+            '</div>' : '';
         body.innerHTML =
             '<div class="op-info"><b>' + esc(p.path) + '</b>（' + esc(p.size) + ' / ' + esc(p.fstype || 'FS不明') + '）<br>' +
             '使用中: ' + esc(p.used || '不明') + (p.mountpoint ? ' ｜ マウント中: <b class="mount-warn">' + esc(p.mountpoint) + '</b>' : ' ｜ 未マウント') +
@@ -710,6 +871,7 @@ function renderOp() {
                   (!canResize ? '<br><b style="color:#f87171">拡大・縮小できる余地がありません。</b>' : '') +
                   (canMove ? '<br>直前の空き先頭（' + moveToMiB + ' MiB付近）へ移動できます。' : '') + '</div></div>' +
                   frontBlock +
+                  moveBlock +
                   '<div class="btn-group">' +
                   '<button class="btn btn-secondary" onclick="doMoveForward()" ' + (busy || !canMove ? 'disabled' : '') + '>前方に移動</button>' +
                   '<button class="btn btn-primary" onclick="doResize()" ' + (busy || !canResize ? 'disabled' : '') + '>サイズ変更を実行</button>' +
@@ -718,6 +880,7 @@ function renderOp() {
                   '<div class="note">※ xfs / btrfs は拡大のみ対応（FS拡張は別途案内します）。vfat の拡縮小は fatresize 未導入のため未対応です。<br>' +
                   '※ 縮小はファイルシステム連動で行います（ext4 / NTFS）。処理には時間がかかる場合があります。<br>' +
                   '※ 前方拡大はデータの前方コピー＋テーブル更新＋FS拡張で行います（終了位置・後続パーティションは不変）。完了まで画面を閉じずにお待ちください。<br>' +
+                  '※ 位置変更（移動）はデータのブロックコピー＋テーブル更新で行います（サイズ・内容は不変、FS種別を問いません）。後方は逆順複写のため時間がかかる場合があります。<br>' +
                   '※ 前方移動はデータのブロックコピー＋テーブル更新で行います（サイズ・内容は不変、FS種別を問いません）。処理には時間がかかる場合があります。</div>');
     } else {
         const f = sel.free;
@@ -905,6 +1068,34 @@ async function doExpandFront() {
     try {
         setBusy(true);
         const res = await fetch('/api/part/expand_front', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({part: p.path, new_start_mib: newStartMiB})});
+        const data = await res.json();
+        setBusy(false);
+        if (!data.ok) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
+        notify(data.message, 'success');
+        sel = null;
+        await loadDevices();
+    } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function doMoveTo() {
+    if (!sel || sel.kind !== 'part') return;
+    const d = devices.find(x => x.path === sel.disk);
+    const p = sel.part;
+    const minfo = d ? moveRangeInfo(d, p) : null;
+    if (!minfo) { notify('移動できる空きが前後にありません', 'error'); return; }
+    const el = document.getElementById('mv-start-num');
+    const newStartMiB = el ? parseFloat(el.value) : NaN;
+    if (!isFinite(newStartMiB)) { notify('開始位置が不正です', 'error'); return; }
+    if (newStartMiB === minfo.curStartMiB) { notify('位置に変化がありません', 'error'); return; }
+    if (newStartMiB < minfo.minStartMiB || newStartMiB > minfo.maxStartMiB) { notify('可動範囲を超えています', 'error'); return; }
+    const dir = newStartMiB < minfo.curStartMiB ? '前方' : '後方';
+    if (!confirm(p.path + ' を' + dir + 'に移動します（開始 ' + minfo.curStartMiB + ' MiB → ' + newStartMiB + ' MiB、サイズ不変）。\n' +
+        'データのブロックコピーを伴います。\n完了まで画面を閉じずにお待ちください。\n\n実行しますか？')) return;
+    if (!confirm('最終確認です。\n処理中に電源断・再起動が起きるとデータが失われる可能性があります。実行してよろしいですか？')) return;
+    try {
+        setBusy(true);
+        const res = await fetch('/api/part/move_to', {method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({part: p.path, new_start_mib: newStartMiB})});
         const data = await res.json();
         setBusy(false);
