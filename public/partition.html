@@ -473,6 +473,7 @@ function resizeDragStart(e, disk, partPath, side) {
             barWidth: barRect.width, totalBytes: finfo.totalBytes,
             curBytes: finfo.curBytes, curStartBytes: finfo.curStartBytes,
             minStartMiB: finfo.minStartMiB, maxStartMiB: finfo.curStartMiB,
+            maxStartBytes: finfo.curStartBytes,
             newStartMiB: finfo.curStartMiB,
             seg: seg, pbar: pbar, tip: tip, moved: false,
             prevSeg: prevSeg, prevOrigBytes: prevOrigBytes};
