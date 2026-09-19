@@ -45,6 +45,8 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
 .resize-handle:hover::after{background:#fff;opacity:1}
 .resize-handle.dragging::after{background:#fff;opacity:1}
 .resize-tip{position:fixed;z-index:2000;pointer-events:none;background:#0f172a;border:1px solid #38bdf8;border-radius:6px;padding:4px 10px;font-size:0.8em;color:#e2e8f0;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.5)}
+/* ドラッグ中に挿入される空きプレビュー（後続パーティションは動かさない） */
+.seg.preview-free{outline:2px dashed #38bdf8;outline-offset:-2px}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:0.78em;color:#94a3b8}
 .legend span{display:flex;align-items:center;gap:5px}
 .sw{display:inline-block;width:12px;height:12px;border-radius:3px}
@@ -143,6 +145,13 @@ function notify(msg, type) {
     setTimeout(() => el.remove(), 5000);
 }
 function fmtMiB(bytes) { return Math.round(bytes / 1048576); }
+function fmtBytes(bytes) {
+    bytes = Math.max(0, Math.round(bytes || 0));
+    if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB';
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(2) + ' MB';
+    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return bytes + ' B';
+}
 
 async function loadAll() {
     await checkTools();
@@ -278,6 +287,7 @@ function renderDisk(d) {
                 }
             }
             bar += '<div class="seg' + selected + '" style="width:' + pct + '%;background:' + fsColor(p.fstype) + '" ' +
+                'data-part="' + esc(p.path) + '" data-bytes="' + (p.size_bytes || 0) + '" ' +
                 'title="' + esc(segTitle(p)) + '" onclick="selectSeg(\'' + esc(d.path) + '\',\'part\',\'' + esc(p.path) + '\')">' +
                 (usePct ? '<div class="used" style="width:' + usePct + '%"></div>' : '') +
                 '<div class="seg-label">' + esc(short) + '</div>' + handle + '</div>';
@@ -285,6 +295,7 @@ function renderDisk(d) {
             const f = it.f;
             const selected = (sel && sel.kind === 'free' && sel.disk === d.path && sel.freeStart === f.start_bytes) ? ' selected' : '';
             bar += '<div class="seg free' + selected + '" style="width:' + pct + '%" ' +
+                'data-free="' + f.start_bytes + '" data-bytes="' + (f.size_bytes || 0) + '" ' +
                 'title="空き領域 ' + esc(f.size) + '" onclick="selectSeg(\'' + esc(d.path) + '\',\'free\',' + f.start_bytes + ')">' +
                 '<div class="seg-label">空き ' + esc(f.size) + '</div></div>';
         }
@@ -407,9 +418,25 @@ function resizeDragStart(e, disk, partPath) {
     if (!info) return;
     const seg = (e.target.closest ? e.target.closest('.seg') : null);
     const pbar = (e.target.closest ? e.target.closest('.pbar') : null);
-    if (!pbar) return;
+    if (!seg || !pbar) return;
     const barRect = pbar.getBoundingClientRect();
     if (!barRect.width) return;
+    // 前回ドラッグのプレビューが残っていれば取り除き、幅を実測値に戻してから開始する
+    // （後続パーティションの位置は一切変えない）
+    pbar.querySelectorAll('.preview-free').forEach(el => el.remove());
+    seg.style.width = Math.max(0.6, info.curBytes / info.totalBytes * 100) + '%';
+    // 直後の空きセグ（表示されている場合のみ取得。拡大分はここから消費し、
+    // 縮小分はここに戻す。後続パーティション自体は移動しない）
+    const adj = adjacentFreeAfter(d, p);
+    let nextSeg = null, nextOrigBytes = 0;
+    if (adj) {
+        const found = pbar.querySelector('[data-free="' + adj.start_bytes + '"]');
+        if (found) {
+            nextSeg = found;
+            nextOrigBytes = adj.size_bytes || 0;
+            nextSeg.style.width = Math.max(0.6, nextOrigBytes / info.totalBytes * 100) + '%';
+        }
+    }
     const pt = (e.touches && e.touches[0]) ? e.touches[0] : e;
     const tip = document.createElement('div');
     tip.className = 'resize-tip';
@@ -417,7 +444,8 @@ function resizeDragStart(e, disk, partPath) {
     resizeDrag = {disk: disk, partPath: partPath, startX: pt.clientX,
         barWidth: barRect.width, totalBytes: info.totalBytes,
         curBytes: info.curBytes, minMiB: info.minMiB, maxMiB: info.maxMiB,
-        newMiB: info.curMiB, seg: seg, pbar: pbar, tip: tip, moved: false};
+        newMiB: info.curMiB, seg: seg, pbar: pbar, tip: tip, moved: false,
+        nextSeg: nextSeg, nextOrigBytes: nextOrigBytes, previewFree: null};
     if (seg) seg.querySelector('.resize-handle')?.classList.add('dragging');
     pbar.classList.add('dragging');
     updateResizeTip(pt.clientX, pt.clientY);
@@ -442,11 +470,42 @@ function applyResizeDragValue() {
     const num = document.getElementById('rs-size-num');
     if (range) { range.value = resizeDrag.newMiB; }
     if (num) { num.value = resizeDrag.newMiB; }
-    // グラフ上で幅をプレビュー表示する
+    // グラフ上で幅をプレビュー表示する。後続パーティションは固定し、
+    // 増減分は直後の空き（表示あり：その空きセグ／表示なし：破線の仮空きセグ）で吸収する
     if (resizeDrag.seg && resizeDrag.totalBytes > 0) {
         const newBytes = resizeDrag.newMiB * 1048576;
-        const pct = Math.max(0.6, newBytes / resizeDrag.totalBytes * 100);
-        resizeDrag.seg.style.width = pct + '%';
+        const total = resizeDrag.totalBytes;
+        resizeDrag.seg.style.width = Math.max(0.6, newBytes / total * 100) + '%';
+        const delta = newBytes - resizeDrag.curBytes;
+        if (resizeDrag.nextSeg) {
+            const freeBytes = Math.max(0, resizeDrag.nextOrigBytes - delta);
+            resizeDrag.nextSeg.style.width = Math.max(0.6, freeBytes / total * 100) + '%';
+            const label = resizeDrag.nextSeg.querySelector('.seg-label');
+            if (label) label.textContent = '空き ' + fmtBytes(freeBytes);
+            resizeDrag.nextSeg.title = '空き領域 ' + fmtBytes(freeBytes) + '（プレビュー）';
+        } else {
+            // 直後に表示できる空きが無い場合（隣接パーティションあり等）は
+            // 縮小分を仮の空きセグとして対象直後に挿入する。後続は動かさない
+            if (delta < -524288) {
+                const freeBytes = -delta;
+                let pf = resizeDrag.previewFree;
+                if (!pf || !pf.isConnected) {
+                    pf = document.createElement('div');
+                    pf.className = 'seg free preview-free';
+                    pf.title = 'リサイズで生じる空き（プレビュー）。後続パーティションは移動しません';
+                    pf.innerHTML = '<div class="seg-label"></div>';
+                    resizeDrag.seg.after(pf);
+                    resizeDrag.previewFree = pf;
+                }
+                pf.style.width = Math.max(0.6, freeBytes / total * 100) + '%';
+                const label = pf.querySelector('.seg-label');
+                if (label) label.textContent = '空き ' + fmtBytes(freeBytes);
+                pf.title = 'リサイズで生じる空き ' + fmtBytes(freeBytes) + '（プレビュー）。後続パーティションは移動しません';
+            } else if (resizeDrag.previewFree) {
+                resizeDrag.previewFree.remove();
+                resizeDrag.previewFree = null;
+            }
+        }
     }
 }
 
@@ -546,6 +605,7 @@ function renderOp() {
                   '<input type="number" id="rs-size-num" value="' + curMiB + '" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" oninput="document.getElementById(\'rs-size\').value=this.value">' +
                   '<div class="help-text">使用中 ' + (p.used || '不明') + ' のため ' + minMiB + ' MiB 以上が必要です。小さくすると縮小、大きくすると拡大します（拡大には直後の空きが必要）。' +
                   '<br>選択中のグラフ右端にカーソルを合わせると↔に変わり、ドラッグでもサイズを調整できます（確定には下の「サイズ変更を実行」が必要です）。' +
+                  '<br>縮小・拡大とも対象のみ変更し、後続パーティションの位置は変わりません（増減分は直後の空きに出入りします）。' +
                   (!canResize ? '<br><b style="color:#f87171">拡大・縮小できる余地がありません。</b>' : '') +
                   (canMove ? '<br>直前の空き先頭（' + moveToMiB + ' MiB付近）へ移動できます。' : '') + '</div></div>' +
                   '<div class="btn-group">' +
