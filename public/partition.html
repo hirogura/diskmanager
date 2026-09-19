@@ -36,6 +36,15 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
 .seg .seg-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.72em;font-weight:bold;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.8);white-space:nowrap;overflow:hidden;padding:0 4px}
 .seg.free{background:repeating-linear-gradient(45deg,#1e293b,#1e293b 6px,#273449 6px,#273449 12px)}
 .seg.selected{outline:3px solid #38bdf8;outline-offset:-3px;z-index:1}
+.pbar.dragging{user-select:none}
+.pbar.dragging .seg{cursor:ew-resize !important}
+/* 選択中パーティションの右端リサイズハンドル。ホバーでカーソルが ew-resize に変わる */
+.resize-handle{position:absolute;top:0;bottom:0;right:0;width:14px;z-index:3;cursor:ew-resize;display:flex;align-items:center;justify-content:center;touch-action:none}
+.resize-handle::after{content:'';width:5px;height:62%;border-radius:3px;background:rgba(255,255,255,0.65);box-shadow:0 0 3px rgba(0,0,0,0.7);opacity:0.55;transition:opacity 0.15s,background 0.15s}
+.seg.selected .resize-handle::after{opacity:0.9}
+.resize-handle:hover::after{background:#fff;opacity:1}
+.resize-handle.dragging::after{background:#fff;opacity:1}
+.resize-tip{position:fixed;z-index:2000;pointer-events:none;background:#0f172a;border:1px solid #38bdf8;border-radius:6px;padding:4px 10px;font-size:0.8em;color:#e2e8f0;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.5)}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:0.78em;color:#94a3b8}
 .legend span{display:flex;align-items:center;gap:5px}
 .sw{display:inline-block;width:12px;height:12px;border-radius:3px}
@@ -253,12 +262,25 @@ function renderDisk(d) {
             const p = it.p;
             let usePct = 0;
             if (p.used_bytes && p.size_bytes) usePct = Math.min(100, p.used_bytes / p.size_bytes * 100);
-            const selected = (sel && sel.kind === 'part' && sel.path === p.path) ? ' selected' : '';
+            const isSel = (sel && sel.kind === 'part' && sel.path === p.path);
+            const selected = isSel ? ' selected' : '';
             const short = p.path.replace(d.path, '').replace('/dev/', '') || p.path;
+            // 選択中のパーティションの右端にドラッグ用ハンドルを付ける
+            // （マウント中・システム・拡縮小余地なしの場合は付けない）
+            let handle = '';
+            if (isSel && !d.is_system && !p.mountpoint && !busy) {
+                const info = selectedResizeInfo(d, p);
+                if (info) {
+                    handle = '<div class="resize-handle" title="右端をドラッグでサイズ変更（' +
+                        info.minMiB + '〜' + info.maxMiB + ' MiB）" ' +
+                        'onmousedown="resizeDragStart(event,\'' + esc(d.path) + '\',\'' + esc(p.path) + '\')" ' +
+                        'ontouchstart="resizeDragStart(event,\'' + esc(d.path) + '\',\'' + esc(p.path) + '\')"></div>';
+                }
+            }
             bar += '<div class="seg' + selected + '" style="width:' + pct + '%;background:' + fsColor(p.fstype) + '" ' +
                 'title="' + esc(segTitle(p)) + '" onclick="selectSeg(\'' + esc(d.path) + '\',\'part\',\'' + esc(p.path) + '\')">' +
                 (usePct ? '<div class="used" style="width:' + usePct + '%"></div>' : '') +
-                '<div class="seg-label">' + esc(short) + '</div></div>';
+                '<div class="seg-label">' + esc(short) + '</div>' + handle + '</div>';
         } else {
             const f = it.f;
             const selected = (sel && sel.kind === 'free' && sel.disk === d.path && sel.freeStart === f.start_bytes) ? ' selected' : '';
@@ -299,6 +321,8 @@ function renderDisk(d) {
 }
 
 function selectSeg(disk, kind, key) {
+    // ドラッグ直後の click 誤発火を抑止する
+    if (suppressSelectClick) return;
     const d = devices.find(x => x.path === disk);
     if (!d) return;
     if (kind === 'part') {
@@ -351,6 +375,118 @@ function adjacentFreeBefore(d, part) {
         }
     });
     return best;
+}
+
+// 選択中パーティションのドラッグ用リサイズ範囲。拡縮小余地がなければ null
+function selectedResizeInfo(d, part) {
+    if (!d || !part || d.is_system || part.mountpoint) return null;
+    const curMiB = fmtMiB(part.size_bytes || 0);
+    const minMiB = part.used_bytes ? Math.ceil(part.used_bytes * 1.05 / 1048576) + 64 : 16;
+    const adj = adjacentFreeAfter(d, part);
+    const maxMiB = curMiB + (adj ? fmtMiB(adj.size_bytes) : 0);
+    if (!(maxMiB > minMiB)) return null;
+    return {curMiB: curMiB, minMiB: minMiB, maxMiB: maxMiB,
+        curBytes: part.size_bytes || 0, totalBytes: d.size_bytes || 1};
+}
+
+// グラフ右端ドラッグによるサイズ変更
+let resizeDrag = null;
+let suppressSelectClick = false;
+
+function resizeDragStart(e, disk, partPath) {
+    if (busy) return;
+    if (e.cancelable === false) return;
+    if (e.type === 'mousedown' && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const d = devices.find(x => x.path === disk);
+    if (!d) return;
+    const p = (d.partitions || []).find(x => x.path === partPath);
+    if (!p) return;
+    const info = selectedResizeInfo(d, p);
+    if (!info) return;
+    const seg = (e.target.closest ? e.target.closest('.seg') : null);
+    const pbar = (e.target.closest ? e.target.closest('.pbar') : null);
+    if (!pbar) return;
+    const barRect = pbar.getBoundingClientRect();
+    if (!barRect.width) return;
+    const pt = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    const tip = document.createElement('div');
+    tip.className = 'resize-tip';
+    document.body.appendChild(tip);
+    resizeDrag = {disk: disk, partPath: partPath, startX: pt.clientX,
+        barWidth: barRect.width, totalBytes: info.totalBytes,
+        curBytes: info.curBytes, minMiB: info.minMiB, maxMiB: info.maxMiB,
+        newMiB: info.curMiB, seg: seg, pbar: pbar, tip: tip, moved: false};
+    if (seg) seg.querySelector('.resize-handle')?.classList.add('dragging');
+    pbar.classList.add('dragging');
+    updateResizeTip(pt.clientX, pt.clientY);
+    window.addEventListener('mousemove', resizeDragMove, {passive: false});
+    window.addEventListener('mouseup', resizeDragEnd);
+    window.addEventListener('touchmove', resizeDragMove, {passive: false});
+    window.addEventListener('touchend', resizeDragEnd);
+    window.addEventListener('touchcancel', resizeDragEnd);
+}
+
+function updateResizeTip(clientX, clientY) {
+    if (!resizeDrag) return;
+    resizeDrag.tip.textContent = resizeDrag.newMiB + ' MiB（' +
+        resizeDrag.minMiB + '〜' + resizeDrag.maxMiB + '）';
+    resizeDrag.tip.style.left = (clientX + 14) + 'px';
+    resizeDrag.tip.style.top = (clientY + 12) + 'px';
+}
+
+function applyResizeDragValue() {
+    if (!resizeDrag) return;
+    const range = document.getElementById('rs-size');
+    const num = document.getElementById('rs-size-num');
+    if (range) { range.value = resizeDrag.newMiB; }
+    if (num) { num.value = resizeDrag.newMiB; }
+    // グラフ上で幅をプレビュー表示する
+    if (resizeDrag.seg && resizeDrag.totalBytes > 0) {
+        const newBytes = resizeDrag.newMiB * 1048576;
+        const pct = Math.max(0.6, newBytes / resizeDrag.totalBytes * 100);
+        resizeDrag.seg.style.width = pct + '%';
+    }
+}
+
+function resizeDragMove(e) {
+    if (!resizeDrag) return;
+    if (e.cancelable !== false) e.preventDefault();
+    const pt = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    const dx = pt.clientX - resizeDrag.startX;
+    if (Math.abs(dx) > 2) resizeDrag.moved = true;
+    const deltaBytes = dx / resizeDrag.barWidth * resizeDrag.totalBytes;
+    let newBytes = resizeDrag.curBytes + deltaBytes;
+    const minBytes = resizeDrag.minMiB * 1048576;
+    const maxBytes = resizeDrag.maxMiB * 1048576;
+    newBytes = Math.min(maxBytes, Math.max(minBytes, newBytes));
+    resizeDrag.newMiB = Math.round(newBytes / 1048576);
+    resizeDrag.newMiB = Math.min(resizeDrag.maxMiB, Math.max(resizeDrag.minMiB, resizeDrag.newMiB));
+    updateResizeTip(pt.clientX, pt.clientY);
+    applyResizeDragValue();
+}
+
+function resizeDragEnd() {
+    if (!resizeDrag) return;
+    const tip = resizeDrag.tip;
+    const pbar = resizeDrag.pbar;
+    const handle = resizeDrag.seg ? resizeDrag.seg.querySelector('.resize-handle') : null;
+    if (tip) tip.remove();
+    if (pbar) pbar.classList.remove('dragging');
+    if (handle) handle.classList.remove('dragging');
+    const moved = resizeDrag.moved;
+    resizeDrag = null;
+    window.removeEventListener('mousemove', resizeDragMove);
+    window.removeEventListener('mouseup', resizeDragEnd);
+    window.removeEventListener('touchmove', resizeDragMove);
+    window.removeEventListener('touchend', resizeDragEnd);
+    window.removeEventListener('touchcancel', resizeDragEnd);
+    if (moved) {
+        // ハンドルが seg 内にあるため、mouseup 後の click で選択が外れないよう1回だけ抑止する
+        suppressSelectClick = true;
+        setTimeout(() => { suppressSelectClick = false; }, 50);
+    }
 }
 
 function renderOp() {
@@ -409,6 +545,7 @@ function renderOp() {
                   '<input type="range" id="rs-size" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" value="' + curMiB + '" oninput="document.getElementById(\'rs-size-num\').value=this.value">' +
                   '<input type="number" id="rs-size-num" value="' + curMiB + '" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" oninput="document.getElementById(\'rs-size\').value=this.value">' +
                   '<div class="help-text">使用中 ' + (p.used || '不明') + ' のため ' + minMiB + ' MiB 以上が必要です。小さくすると縮小、大きくすると拡大します（拡大には直後の空きが必要）。' +
+                  '<br>選択中のグラフ右端にカーソルを合わせると↔に変わり、ドラッグでもサイズを調整できます（確定には下の「サイズ変更を実行」が必要です）。' +
                   (!canResize ? '<br><b style="color:#f87171">拡大・縮小できる余地がありません。</b>' : '') +
                   (canMove ? '<br>直前の空き先頭（' + moveToMiB + ' MiB付近）へ移動できます。' : '') + '</div></div>' +
                   '<div class="btn-group">' +
