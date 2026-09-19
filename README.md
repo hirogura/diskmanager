@@ -11,6 +11,8 @@ ddrescueGUI の機能はそのままに、UI をサイドバー切替式に作�
 - 使用ツール: `ddrescue`（Debian では `gddrescue`）, `smartmontools`, `lsblk` / `blkid`（Arch 系では `util-linux`）, `file`, `git`, `clonezilla`, `partclone`, `rsync`, `parted`, `dosfstools`, `ntfs-3g`, `exfatprogs`, `xfsprogs`, `btrfs-progs`, `e2fsprogs`, `hdparm`, `jq`, `nvme-cli`
 - ファビコンは ddrescueGUI と同じものを使用しています。
 
+![ロゴ画像](diskmanager-ph.png)
+
 ## 画面構成
 
 起動時のメイン画面は「パーティション操作」で、右ペインに内容を表示します。
