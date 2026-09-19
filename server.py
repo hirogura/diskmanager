@@ -12,7 +12,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.0.6"
+VERSION = "0.0.7"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2383,6 +2383,212 @@ def part_resize(part, new_size_bytes):
         return {"ok": False, "error": f"未対応のファイルシステムです: {fstype or '不明'}"}
 
 
+def _fs_grow_to_fill(part, fstype):
+    """ファイルシステムをパーティション全体に拡張する（前方拡大の後半用）。
+    後方拡大と同等の手順。戻り値は (ok, err_or_note, need_fs_grow)"""
+    if fstype in ("", "exfat"):
+        # 生データ・exfat はテーブル変更のみ（後方拡大と同様）
+        return True, "", False
+    if fstype == "ext4":
+        if shutil.which("resize2fs") is None or shutil.which("e2fsck") is None:
+            return False, "e2fsck/resize2fs が利用できません", False
+        rc, out = _run_cmd(["e2fsck", "-f", "-y", part], timeout=600)
+        if rc not in (0, 1):
+            return False, f"ファイルシステム検査に失敗しました: {out[:300]}", False
+        rc, out = _run_cmd(["resize2fs", part], timeout=1800)
+        if rc != 0:
+            return False, f"ファイルシステム拡大に失敗しました: {out[:300]}", False
+        return True, "", False
+    if fstype == "ntfs":
+        if shutil.which("ntfsresize") is None:
+            return False, "ntfsresize が利用できません", False
+        rc, out = _run_cmd(["ntfsresize", "-f", part], timeout=1800)
+        if rc != 0:
+            return False, f"NTFS拡大に失敗しました: {out[:300]}", False
+        return True, "", False
+    if fstype in ("xfs", "btrfs"):
+        grow = "xfs_growfs（マウント後に実行）" if fstype == "xfs" else "btrfs filesystem resize（マウント後に実行）"
+        return True, grow, True
+    if fstype == "vfat":
+        if shutil.which("fatresize") is None:
+            return False, "vfat のリサイズには fatresize が必要です（未導入のため未対応）", False
+        try:
+            size_mib = get_device_size_bytes(part) // MIB
+        except Exception:
+            size_mib = 0
+        if size_mib < 16:
+            return False, "拡大後のサイズを取得できませんでした", False
+        rc, out = _run_cmd(["fatresize", "-s", f"{size_mib}M", part], timeout=1800)
+        if rc != 0:
+            return False, f"FAT拡大に失敗しました: {out[:300]}", False
+        return True, "", False
+    return False, f"未対応のファイルシステムです: {fstype or '不明'}", False
+
+
+def part_expand_front(part, new_start_bytes):
+    """開始位置を直前の空きにずらして拡大する（終了位置は不変）。
+    データの前方コピー＋テーブル更新＋ファイルシステム拡張で行う。
+    後続パーティションには触れない。縮小方向（開始位置を後ろへ）は
+    重なりコピーが危険なため非対応"""
+    part = (part or "").strip()
+    try:
+        new_start_bytes = int(new_start_bytes or 0)
+    except Exception:
+        return {"ok": False, "error": "開始位置が不正です"}
+    if not PART_DEV_RE.match(part):
+        return {"ok": False, "error": f"不正なデバイス指定です: {part}"}
+    if not os.path.exists(part):
+        return {"ok": False, "error": f"デバイスが見つかりません: {part}"}
+    disk, err = _part_guard(part)
+    if err:
+        return {"ok": False, "error": err}
+    if get_dev_mountpoint(part):
+        return {"ok": False, "error": f"{part} はマウント中のため変更できません（先にアンマウントしてください）"}
+    try:
+        r = subprocess.run(["swapon", "--show=NAME", "--noheadings"],
+            capture_output=True, text=True, timeout=10)
+        if part in (r.stdout or ""):
+            return {"ok": False, "error": f"{part} は swap として使用中のため変更できません（swapoff 後に再試行）"}
+    except Exception:
+        pass
+    if shutil.which("sfdisk") is None:
+        return {"ok": False, "error": "sfdisk が利用できません（先にツールをインストールしてください）"}
+    num = _part_number(disk, part)
+    if not num:
+        return {"ok": False, "error": f"パーティション番号を特定できません: {part}"}
+    _, bounds, frees = _parted_parse_free(disk)
+    if num not in bounds:
+        return {"ok": False, "error": f"パーティション情報を取得できません: {part}"}
+    start_b, end_b = bounds[num]
+    # 直前に隣接する空き領域を探す（前方移動と同条件）
+    gap = None
+    for f in frees or []:
+        try:
+            fs, fe = int(f.get("start_bytes", 0)), int(f.get("end_bytes", 0))
+        except Exception:
+            continue
+        if fe <= start_b and fe >= start_b - MIB and fs < start_b:
+            if gap is None or int(f.get("size_bytes", 0)) > int(gap.get("size_bytes", 0)):
+                gap = f
+    if gap is None:
+        return {"ok": False, "error": f"{part} の直前に拡大できる空き領域がありません"}
+    gap_start = int(gap.get("start_bytes", 0))
+    # MiB アライメント（切り捨て。1MiB未満の端数は切り捨てて安全側にする）
+    new_start = (int(new_start_bytes) // MIB) * MIB
+    if new_start >= start_b:
+        return {"ok": False, "error": "前方への拡大ではありません（開始位置を現在より前に指定してください）。縮小方向には未対応です"}
+    if new_start < gap_start:
+        return {"ok": False, "error": f"直前の空き領域（{_fmt_bytes(int(gap.get('size_bytes', 0)))}）を超えています"}
+    if start_b - new_start < MIB:
+        return {"ok": False, "error": "拡大幅が小さすぎます（1MiB以上指定してください）"}
+    # 正確な現サイズ（ブロックデバイス基準）
+    psize = get_device_size_bytes(part)
+    if psize < MIB:
+        return {"ok": False, "error": f"{part} のサイズを取得できません"}
+    if start_b % 512 or new_start % 512 or psize % 512:
+        return {"ok": False, "error": "セクタ境界に収まらないため拡大できません"}
+    # FS種別・対応可否の判定（後方拡大と同方針。swap・不明FSは不可）
+    fstype = ""
+    try:
+        r = subprocess.run(["lsblk", "-J", "-b", "-o", "NAME,FSTYPE", part],
+            capture_output=True, text=True, timeout=10)
+        data = json.loads(r.stdout or "{}")
+        devs = data.get("blockdevices", [])
+        if devs:
+            fstype = ((devs[0].get("fstype") or "").strip().lower())
+    except Exception:
+        pass
+    if fstype in ("swap",):
+        return {"ok": False, "error": "swap の前方拡大は未対応です（削除後に再作成してください）"}
+    if fstype not in ("", "ext4", "ntfs", "xfs", "btrfs", "vfat", "exfat"):
+        return {"ok": False, "error": f"未対応のファイルシステムです: {fstype or '不明'}"}
+    if fstype == "vfat" and shutil.which("fatresize") is None:
+        return {"ok": False, "error": "vfat のリサイズには fatresize が必要です（未導入のため未対応）"}
+    if fstype == "ext4" and (shutil.which("resize2fs") is None or shutil.which("e2fsck") is None):
+        return {"ok": False, "error": "e2fsck/resize2fs が利用できません"}
+    if fstype == "ntfs" and shutil.which("ntfsresize") is None:
+        return {"ok": False, "error": "ntfsresize が利用できません"}
+    # 移動前の読み取り専用検査（異常FSのまま複写しないため）
+    if fstype == "ext4":
+        rc, out = _run_cmd(["e2fsck", "-n", part], timeout=600)
+        if rc not in (0, 1):
+            return {"ok": False, "error": f"ファイルシステムに異常があります: {out[:200]}（修復してから再試行してください）"}
+    if fstype == "ntfs":
+        rc, out = _run_cmd(["ntfsresize", "--info", part], timeout=300)
+        if rc != 0:
+            return {"ok": False, "error": f"{part} の NTFS に異常があるため開始できません（Windows で chkdsk /f を実行してください）"}
+    # 移動前のFS識別子を記録（移動後の完全性確認用）
+    before_id = ""
+    try:
+        r = subprocess.run(["blkid", "-o", "value", "-s", "UUID", part],
+            capture_output=True, text=True, timeout=10)
+        before_id = (r.stdout or "").strip().split("\n")[0].strip()
+    except Exception:
+        pass
+    # 1) データの前方ブロックコピー（移動先＜移動元のため安全）
+    if start_b % MIB == 0 and new_start % MIB == 0 and psize % MIB == 0:
+        bs = MIB
+    else:
+        bs = 512
+    skip, seek, count = start_b // bs, new_start // bs, psize // bs
+    dd_timeout = max(600, min(7200, psize // (10 * MIB) + 300))
+    rc, out = _run_cmd(["dd", f"if={disk}", f"of={disk}", f"bs={bs}",
+        f"skip={skip}", f"seek={seek}", f"count={count}", "conv=notrunc,fsync"],
+        timeout=dd_timeout)
+    if rc != 0:
+        return {"ok": False, "error": f"データの移動に失敗しました: {out[:300]}"}
+    # 2) テーブル更新（開始位置のみ前進。終了位置は不変＝size を拡大分だけ増やす）
+    new_start_sec = new_start // 512
+    new_size_sec = (start_b + psize - new_start) // 512
+    if (start_b + psize - new_start) % 512:
+        return {"ok": False, "error": "セクタ境界に収まらないためテーブルを更新できません（データは新旧両位置にあります。手動で確認してください）"}
+    rc, dump = _run_cmd(["sfdisk", "--dump", disk], timeout=30)
+    if rc != 0:
+        return {"ok": False, "error": f"テーブル読込に失敗しました: {dump[:200]}（データは元の位置に残っています）"}
+    lines = []
+    found = False
+    for line in dump.split("\n"):
+        s = line.strip()
+        if s.startswith(part + " ") or s.startswith(part + ":") or s.startswith(part + "\t"):
+            nline, n1 = re.subn(r"start\s*=\s*\d+", f"start={new_start_sec}", line, count=1)
+            nline, n2 = re.subn(r"size\s*=\s*\d+", f"size={new_size_sec}", nline, count=1)
+            if n1 and n2:
+                line = nline
+                found = True
+        lines.append(line)
+    if not found:
+        return {"ok": False, "error": f"テーブル内に {part} が見つかりません（データは元の位置に残っています）"}
+    rc, out = _run_cmd(["sfdisk", "--force", disk], timeout=120,
+        input_text="\n".join(lines) + "\n")
+    if rc != 0:
+        return {"ok": False, "error": f"テーブル更新に失敗しました: {out[:300]}（データは新旧両位置にあります。手動で確認してください）"}
+    _part_refresh(disk)
+    _, bounds2, _ = _parted_parse_free(disk)
+    if bounds2.get(num, (None, None))[0] != new_start:
+        return {"ok": False, "error": "拡大後の位置を確認できませんでした（テーブルを確認してください）"}
+    if before_id:
+        try:
+            r = subprocess.run(["blkid", "-o", "value", "-s", "UUID", part],
+                capture_output=True, text=True, timeout=10)
+            after_id = (r.stdout or "").strip().split("\n")[0].strip()
+            if after_id != before_id:
+                return {"ok": False, "error": "拡大後の識別子が一致しません（データを確認してください）"}
+        except Exception:
+            pass
+    # 3) ファイルシステムを末尾まで拡張する
+    ok, msg, need_grow = _fs_grow_to_fill(part, fstype)
+    if not ok:
+        return {"ok": False, "error": f"パーティションは拡大済みですが{msg}（FSは元のサイズのままです）"}
+    _part_refresh(disk)
+    if need_grow:
+        return {"ok": True,
+            "message": f"{part} を前方に拡大しました（開始 {start_b // MIB}MiB → {new_start // MIB}MiB）。FS拡張は別途 {msg} が必要です",
+            "need_fs_grow": True}
+    grow_note = f"・{fstype}連動" if fstype in ("ext4", "ntfs", "vfat") else ""
+    return {"ok": True,
+        "message": f"{part} を前方に拡大しました（開始 {start_b // MIB}MiB → {new_start // MIB}MiB{grow_note}）"}
+
+
 def part_move_forward(part):
     """パーティションを直前の空き領域の先頭へ移動する（サイズ・内容は不変）。
     データのブロックコピー＋パーティションテーブルの開始位置更新で行うため
@@ -2956,6 +3162,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p.path == "/api/part/mklabel": self._handle_part_mklabel(data)
         elif p.path == "/api/part/dellabel": self._handle_part_dellabel(data)
         elif p.path == "/api/part/resize": self._handle_part_resize(data)
+        elif p.path == "/api/part/expand_front": self._handle_part_expand_front(data)
         elif p.path == "/api/part/move": self._handle_part_move(data)
         else: self._json({"error": "not found"}, 404)
 
@@ -3566,6 +3773,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 new_size = 0
         res = part_resize(part, new_size)
+        self._json(res, 200 if res.get("ok") else 400)
+
+    def _handle_part_expand_front(self, data):
+        err = self._part_busy_guard()
+        if err:
+            self._json({"error": err}); return
+        part = ((data.get("part") or data.get("path") or "")).strip()
+        if not part:
+            self._json({"error": "パーティションを指定してください"}); return
+        new_start = data.get("new_start_bytes")
+        if new_start is None and data.get("new_start_mib") is not None:
+            try:
+                new_start = int(float(data.get("new_start_mib")) * MIB)
+            except Exception:
+                new_start = 0
+        res = part_expand_front(part, new_start)
         self._json(res, 200 if res.get("ok") else 400)
 
     def _handle_part_move(self, data):
