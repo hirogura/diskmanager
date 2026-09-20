@@ -463,11 +463,13 @@ function shrinkMinMiB(part) {
 }
 // 拡大上限（MiB）。直後空きの末尾から逆算した厳密値で、バックエンドの
 // 受入条件（空き末尾以内・拡大幅1MiB以上）と同式。満たさなければ null
+// （parted の END は末尾バイト（含む）指定のため、次パーティション先頭と
+// 同値になると重なりエラーになる。空き末尾バイトで上限を抑える）
 function expandLimits(d, part) {
     const adj = d ? adjacentFreeAfter(d, part) : null;
     if (!adj || !(part.start_bytes > 0) || !(part.end_bytes > 0)) return null;
     if (adj.start_bytes > part.end_bytes + 1) return null;
-    const maxMiB = Math.floor((adj.end_bytes + 1 - part.start_bytes) / 1048576);
+    const maxMiB = Math.floor((adj.end_bytes - part.start_bytes) / 1048576);
     const curEndBased = part.end_bytes - part.start_bytes;
     if (!(maxMiB * 1048576 >= curEndBased + 1048576)) return null;
     return {maxMiB: maxMiB, adj: adj};

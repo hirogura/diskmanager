@@ -13,7 +13,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -1700,6 +1700,30 @@ def _run_cmd(cmd, timeout=120, input_text=None):
         return 124, "コマンドがタイムアウトしました"
 
 
+def _clean_parted_output(out):
+    """parted 出力から無人応答の残骸（プロンプトの質問文・入力エコー）を除去し、
+    実診断だけ残す。---pretend-input-tty 時は質問文がそのまま出力に混ざるため"""
+    kept = []
+    for ln in (out or "").split("\n"):
+        s = ln.strip()
+        if not s or s == "Yes":
+            continue
+        if "はい(Y)/Yes/いいえ(N)/No" in s:
+            # 質問サフィックスより前（警告本文など）は残す
+            s = s.split("はい(Y)/Yes")[0].strip()
+            if not s:
+                continue
+            ln = ln[:ln.find("はい(Y)/Yes")]
+        if "それでも実行しますか" in s:
+            # 質問部分だけ削り、警告本文（使用中など）は残す
+            s = s.split("それでも実行しますか")[0].rstrip("？? ").strip()
+            if not s:
+                continue
+            ln = s
+        kept.append(ln)
+    return "\n".join(kept).strip()
+
+
 def _parted_resizepart(disk, num, end_bytes):
     """parted resizepart を実行する。確認プロンプト（縮小時のデータ警告・
     使用中パーティションの継続確認）が -s 指定でも出て失敗するため、
@@ -1707,9 +1731,10 @@ def _parted_resizepart(disk, num, end_bytes):
     （プロンプトが出ない場合は標準入力が無視されるだけのため無害。
     Yes は呼び出し元の二重確認・安全検査を通過後のみ到達する）"""
     end_s = f"{int(end_bytes)}B"
-    return _run_cmd(["parted", "---pretend-input-tty", disk,
+    rc, out = _run_cmd(["parted", "---pretend-input-tty", disk,
         "resizepart", str(num), end_s],
         timeout=300, input_text="Yes\n" * 8)
+    return rc, _clean_parted_output(out)
 
 
 def _fs_volume_size(part, fstype):
@@ -2282,11 +2307,19 @@ def part_resize(part, new_size_bytes):
     if new_size_bytes > cur_size:
         # --- 拡大：後続の空きが連続している必要がある ---
         new_end = start_b + new_size_bytes
-        ok_gap = any(f["start_bytes"] <= end_b + 1 and new_end <= f["end_bytes"] + 1
-            for f in frees)
-        if not ok_gap:
+        adj_gap = None
+        for f in frees:
+            if f["start_bytes"] <= end_b + 1 and new_end <= f["end_bytes"] + 1:
+                if adj_gap is None or f["end_bytes"] > adj_gap["end_bytes"]:
+                    adj_gap = f
+        if adj_gap is None:
             return {"ok": False, "error": "パーティション直後に十分な空き領域がありません（拡大には隣接する空きが必要です）"}
         new_end_al = (new_end // MIB) * MIB
+        # parted の END は末尾バイト（含む）指定のため、次パーティションの先頭バイトと
+        # 同値になると重なりエラーになる。空き末尾バイト（MiB切り捨て）で上限を抑える
+        max_end_al = (int(adj_gap["end_bytes"]) // MIB) * MIB
+        if new_end_al > max_end_al:
+            new_end_al = max_end_al
         if new_end_al - start_b < cur_size + MIB:
             return {"ok": False, "error": "アライメント調整後に拡大幅が残りません（サイズを調整してください）"}
         if fstype in ("", "swap"):
