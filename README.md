@@ -4,7 +4,7 @@
 ddrescueGUI の機能はそのままに、UI をサイドバー切替式に作り直したものです。
 
 - ツール名: **Disk Manager**
-- バージョン: **v.0.1.3**
+- バージョン: **v.0.1.4**
 - 動作環境: Ubuntu / Debian / CachyOS（Arch 系含む）（systemd を使用）
 - デフォルトポート: **3361**（`127.0.0.1` のみにバインド。LAN には非公開）
 - 公開方法: Tailscale Serve による HTTPS 化を想定（Tailnet 内のみ公開）
@@ -150,7 +150,7 @@ sudo tailscale serve --https=3361 off
 
 ```
  /opt/diskmanager/
- ├── server.py            # Web サーバー本体（ポート 3361、バージョン 0.1.3）
+ ├── server.py            # Web サーバー本体（ポート 3361、バージョン 0.1.4）
  ├── public/index.html    # サイドバー＋右ペインのシェル
  ├── public/app.js        # ページ切替・アップデート／再起動の待機処理
  ├── public/app.css       # シェル用スタイル

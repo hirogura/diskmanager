@@ -28,6 +28,20 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f
 .dev-meta .serial{color:#7dd3fc;font-family:'Fira Code',monospace}
 .sys-badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:0.75em;font-weight:bold;background:rgba(234,179,8,0.2);color:#eab308;margin-left:8px}
 .mount-warn{color:#f87171;font-weight:bold;font-size:0.85em}
+/* マウント列：パス表示＋右揃えボタン */
+.mnt-cell{display:flex;align-items:center;gap:8px}
+.mnt-cell .mnt-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.btn-mini{padding:3px 10px;border:none;border-radius:5px;font-size:0.75em;cursor:pointer;white-space:nowrap;margin-left:auto;font-family:inherit}
+.btn-mini.mount{background:#2563eb;color:#fff}.btn-mini.mount:hover{background:#1d4ed8}
+.btn-mini.unmount{background:#475569;color:#e2e8f0}.btn-mini.unmount:hover{background:#64748b}
+.btn-mini:disabled{opacity:0.5;cursor:not-allowed}
+/* マウント用モーダル */
+.modal-back{position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal{background:#1e293b;border:1px solid #475569;border-radius:10px;padding:20px;width:100%;max-width:440px}
+.modal h3{font-size:1.05em;color:#38bdf8;margin-bottom:12px}
+.radio{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;font-size:0.9em;color:#e2e8f0;cursor:pointer;line-height:1.6}
+.radio input{margin-top:5px;accent-color:#38bdf8}
+.radio small{display:block;color:#94a3b8;font-size:0.85em}
 /* KDE風グラフィカルバー */
 .pbar{display:flex;height:44px;border:1px solid #475569;border-radius:6px;overflow:hidden;margin-top:12px;background:#1e293b}
 .seg{position:relative;border-right:1px solid #0f172a;min-width:8px;cursor:pointer;overflow:hidden}
@@ -123,6 +137,19 @@ input[type=range]{width:100%;accent-color:#38bdf8}
     <div class="card op-panel">
         <h2>選択中の操作対象</h2>
         <div id="op-body"><div class="help-text">上のバーまたは表からパーティション／空き領域をクリックして選択してください。</div></div>
+    </div>
+</div>
+
+<div class="modal-back" id="mnt-modal" style="display:none" onclick="if(event.target===this)closeMountDialog()">
+    <div class="modal">
+        <h3 id="mnt-title">マウント</h3>
+        <div class="form-group"><label>マウントパス</label><input type="text" id="mnt-path" maxlength="256">
+        <div class="help-text">例: /mnt/vdb1。空でないディレクトリやシステム領域（/etc 等）は指定できません。</div></div>
+        <div class="form-group"><label>マウント種別</label>
+            <label class="radio"><input type="radio" name="mnt-mode" value="temp" checked><span>一時的<small>今回のみマウントします。再起動後は外れます。</small></span></label>
+            <label class="radio"><input type="radio" name="mnt-mode" value="persist"><span>永続的<small>/etc/fstab に追加（UUID指定・nofail付き）し、再起動後も自動マウントします。</small></span></label>
+        </div>
+        <div class="btn-group"><button class="btn btn-primary" id="mnt-exec" onclick="doMount()">マウント実行</button><button class="btn btn-secondary" onclick="closeMountDialog()">キャンセル</button></div>
     </div>
 </div>
 
@@ -250,6 +277,25 @@ function segTitle(p) {
         (p.used ? ' 使用中' + p.used : '') + (p.mountpoint ? ' mounted:' + p.mountpoint : '');
 }
 
+// マウント列のセル内容：パス表示＋右揃えボタン（行選択の伝播は止める）
+function mountCell(d, p) {
+    const mp = p.mountpoint || '';
+    if (mp) {
+        // マウント中：アンマウントボタン（システムドライブは保護のため無効）
+        const sysDis = (d.is_system || busy) ? ' disabled title="システムドライブのため対象外です"' : '';
+        return '<div class="mnt-cell"><span class="mnt-path" title="' + esc(mp) + '">' + esc(mp) + '</span>' +
+            '<button class="btn-mini unmount" title="アンマウントする"' + sysDis +
+            ' onclick="event.stopPropagation();tableUnmount(\'' + esc(d.path) + '\',\'' + esc(p.path) + '\')">アンマウント</button></div>';
+    }
+    // 未マウント：マウントボタン（swapはマウント対象外のため無効）
+    const isSwap = ((p.fstype || '').toLowerCase() === 'swap');
+    const swapDis = (isSwap || busy) ? ' disabled' : '';
+    const swapTitle = isSwap ? ' title="swapはマウント対象外です"' : ' title="マウントする"';
+    return '<div class="mnt-cell"><span class="mnt-path">-</span>' +
+        '<button class="btn-mini mount"' + swapTitle + swapDis +
+        ' onclick="event.stopPropagation();openMountDialog(\'' + esc(d.path) + '\',\'' + esc(p.path) + '\')">マウント</button></div>';
+}
+
 function renderDisk(d) {
     const div = document.createElement('div');
     div.className = 'dev';
@@ -345,7 +391,7 @@ function renderDisk(d) {
         return '<tr class="clickable' + (isSel ? ' row-sel' : '') + '" onclick="selectSeg(\'' + esc(d.path) + '\',\'part\',\'' + esc(p.path) + '\')">' +
             '<td>' + esc(p.path) + '</td><td>' + esc(p.size) + '</td><td>' + esc(p.fstype || '-') + '</td>' +
             '<td>' + (useTxt + '<br>' + ubar) + '</td>' +
-            '<td>' + esc(p.label || p.partlabel || '-') + '</td><td>' + esc(p.mountpoint || '-') + '</td></tr>';
+            '<td>' + esc(p.label || p.partlabel || '-') + '</td><td>' + mountCell(d, p) + '</td></tr>';
     }).join('');
     (d.free_spaces || []).forEach(f => {
         const isSel = (sel && sel.kind === 'free' && sel.disk === d.path && sel.freeStart === f.start_bytes);
@@ -991,6 +1037,72 @@ async function doUnmount() {
         sel = null;
         await loadDevices();
     } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
+}
+
+// 表のマウント列からのアンマウント（行選択とは独立したパス指定）
+async function tableUnmount(disk, partPath) {
+    if (busy) return;
+    if (!confirm(partPath + ' をアンマウントします。\nよろしいですか？')) return;
+    try {
+        setBusy(true);
+        const res = await fetch('/api/part/unmount', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({part: partPath})});
+        const data = await res.json();
+        setBusy(false);
+        if (data.error || data.ok === false) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
+        notify(data.message || 'アンマウントしました', 'success');
+        sel = null;
+        await loadDevices();
+    } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
+}
+
+// 表のマウント列からのマウント用ダイアログ
+let mntTarget = null; // {disk, path}
+function defaultMountPath(partPath) {
+    const base = String(partPath || '').replace('/dev/', '').replace(/[^A-Za-z0-9_.-]/g, '') || 'disk';
+    return '/mnt/' + base;
+}
+function openMountDialog(disk, partPath) {
+    if (busy) return;
+    mntTarget = {disk: disk, path: partPath};
+    document.getElementById('mnt-title').textContent = partPath + ' のマウント';
+    document.getElementById('mnt-path').value = defaultMountPath(partPath);
+    const radios = document.querySelectorAll('input[name="mnt-mode"]');
+    radios.forEach(r => { r.checked = (r.value === 'temp'); });
+    document.getElementById('mnt-modal').style.display = 'flex';
+    setTimeout(() => document.getElementById('mnt-path').focus(), 50);
+}
+function closeMountDialog() {
+    document.getElementById('mnt-modal').style.display = 'none';
+    mntTarget = null;
+}
+async function doMount() {
+    if (!mntTarget || busy) return;
+    const mp = document.getElementById('mnt-path').value.trim();
+    if (!mp) { notify('マウントパスを入力してください', 'error'); return; }
+    const mode = (document.querySelector('input[name="mnt-mode"]:checked') || {}).value || 'temp';
+    const persistent = (mode === 'persist');
+    const msg = mntTarget.path + ' を ' + mp + ' にマウントします' +
+        (persistent ? '（/etc/fstab に永続登録）。\n' : '（一時的）。\n') + '\n実行しますか？';
+    if (!confirm(msg)) return;
+    try {
+        setBusy(true);
+        document.getElementById('mnt-exec').disabled = true;
+        const res = await fetch('/api/part/mount', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({part: mntTarget.path, mountpoint: mp, persistent: persistent})});
+        const data = await res.json();
+        setBusy(false);
+        document.getElementById('mnt-exec').disabled = false;
+        if (data.error || data.ok === false) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
+        notify(data.message || 'マウントしました', 'success');
+        closeMountDialog();
+        sel = null;
+        await loadDevices();
+    } catch(e) {
+        setBusy(false);
+        document.getElementById('mnt-exec').disabled = false;
+        notify('通信エラー: ' + e.message, 'error');
+    }
 }
 
 async function doDelete() {

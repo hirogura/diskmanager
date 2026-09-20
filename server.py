@@ -13,7 +13,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2115,6 +2115,114 @@ def part_delete(part):
     return {"ok": True, "message": f"{part} を削除しました"}
 
 
+def _blk_uuid(part):
+    """blkid で UUID を取得する（取得失敗時は空文字）"""
+    try:
+        r = subprocess.run(["blkid", "-o", "value", "-s", "UUID", part],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            return ((r.stdout or "").strip().split("\n")[0] or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+# マウント先として禁止するシステム系パス（完全一致または配下）。/mnt・/media 直下は
+# 他のマウントを隠すため不可とし、サブディレクトリ（/mnt/xxx 等）のみ許可する
+PART_MOUNT_DENY = ("/boot", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
+    "/proc", "/sys", "/dev", "/run", "/var", "/home", "/root", "/opt", "/srv", "/tmp")
+
+
+def part_mount(part, mountpoint, persistent=False):
+    """パーティションをマウントする。persistent=True の場合は /etc/fstab に
+    UUID ベースで追記して再起動後も自動マウントされるようにする"""
+    part = (part or "").strip()
+    mp = (mountpoint or "").strip()
+    if not PART_DEV_RE.match(part):
+        return {"ok": False, "error": f"不正なデバイス指定です: {part}"}
+    if not os.path.exists(part):
+        return {"ok": False, "error": f"デバイスが見つかりません: {part}"}
+    if get_dev_mountpoint(part):
+        return {"ok": False, "error": f"{part} は既にマウントされています"}
+    # パスの正規化・検証（空白・制御文字は fstab 記述が壊れるため拒否）
+    if not mp.startswith("/"):
+        return {"ok": False, "error": "マウントパスは絶対パスで指定してください"}
+    if any(c.isspace() or ord(c) < 32 for c in mp):
+        return {"ok": False, "error": "マウントパスに空白・制御文字は使えません"}
+    mp = os.path.normpath(mp)
+    if mp == "/" or mp in ("/mnt", "/media"):
+        return {"ok": False, "error": f"{mp} にはマウントできません（サブディレクトリを指定してください）"}
+    for deny in PART_MOUNT_DENY:
+        if mp == deny or mp.startswith(deny + "/"):
+            return {"ok": False, "error": f"{mp} はシステム領域のためマウント先に指定できません（/mnt/xxx 等を指定してください）"}
+    fstype = _get_blk_fstype(part).lower()
+    if not fstype:
+        return {"ok": False, "error": f"{part} のファイルシステムを検出できません（未フォーマットの可能性があります）"}
+    if fstype == "swap":
+        return {"ok": False, "error": f"{part} は swap のためマウントできません"}
+    # マウント先ディレクトリの準備（既存の非空ディレクトリ上への上書きは拒否）
+    try:
+        if os.path.lexists(mp) and not os.path.isdir(mp):
+            return {"ok": False, "error": f"{mp} はディレクトリではありません"}
+        os.makedirs(mp, exist_ok=True)
+    except Exception as e:
+        return {"ok": False, "error": f"マウント先を作成できません: {e}"}
+    try:
+        if os.listdir(mp):
+            return {"ok": False, "error": f"{mp} は空でないためマウント先に指定できません"}
+    except Exception as e:
+        return {"ok": False, "error": f"マウント先を確認できません: {e}"}
+    # 他デバイスのマウントポイントとして使用中なら拒否
+    try:
+        r = subprocess.run(["mountpoint", "-q", mp])
+        if r.returncode == 0:
+            return {"ok": False, "error": f"{mp} は既にマウントポイントとして使用されています"}
+    except Exception:
+        pass
+    if persistent:
+        uuid = _blk_uuid(part)
+        if not uuid:
+            return {"ok": False, "error": f"{part} の UUID を取得できないため永続化できません"}
+        # fstab の重複チェック（同一UUID・同一デバイス・同一マウント先）
+        try:
+            with open("/etc/fstab", "r") as f:
+                fstab_lines = f.read().split("\n")
+        except Exception as e:
+            return {"ok": False, "error": f"/etc/fstab を読めません: {e}"}
+        for ln in fstab_lines:
+            s = ln.strip()
+            if not s or s.startswith("#"):
+                continue
+            cols = s.split()
+            if len(cols) >= 2 and (cols[0] == f"UUID={uuid}" or cols[0] == part or cols[1] == mp):
+                return {"ok": False, "error": f"/etc/fstab に既存エントリがあります: {s[:120]}"}
+        # vfat/exfat/ntfs 系は fsck パスを 0 にする
+        passno = "0 0" if fstype in ("vfat", "fat16", "fat32", "exfat", "ntfs") else "0 2"
+        entry = f"UUID={uuid} {mp} {fstype} defaults,nofail {passno}"
+        try:
+            with open("/etc/fstab", "a") as f:
+                f.write(entry + "\n")
+        except Exception as e:
+            return {"ok": False, "error": f"/etc/fstab に書き込めません: {e}"}
+        rc, out = _run_cmd(["mount", mp], timeout=60)
+        if rc != 0:
+            # fstab を汚したままにしないよう追記分を取り消す
+            try:
+                with open("/etc/fstab", "r") as f:
+                    lines = f.read().split("\n")
+                lines = [ln for ln in lines if ln.strip() != entry]
+                with open("/etc/fstab", "w") as f:
+                    f.write("\n".join(lines))
+            except Exception:
+                pass
+            return {"ok": False, "error": f"マウント失敗（fstab追記は取り消しました）: {out.split(chr(10))[0][:200]}"}
+        return {"ok": True, "message": f"{part} を {mp} にマウントしました（/etc/fstab に永続登録）"}
+    rc, out = _run_cmd(["mount", part, mp], timeout=60)
+    if rc != 0:
+        return {"ok": False, "error": f"マウント失敗: {out.split(chr(10))[0][:200]}"}
+    return {"ok": True, "message": f"{part} を {mp} にマウントしました（一時的）"}
+
+
 # 作成に対応するファイルシステムと mkfs コマンド
 PART_MKFS = {
     "ext4": ["mkfs.ext4", "-F"],
@@ -3484,6 +3592,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p.path == "/api/rsync/stop": self._handle_stop()
         elif p.path == "/api/part/install": self._handle_part_install()
         elif p.path == "/api/part/unmount": self._handle_part_unmount(data)
+        elif p.path == "/api/part/mount": self._handle_part_mount(data)
         elif p.path == "/api/part/delete": self._handle_part_delete(data)
         elif p.path == "/api/part/create": self._handle_part_create(data)
         elif p.path == "/api/part/mklabel": self._handle_part_mklabel(data)
@@ -4025,6 +4134,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if r.returncode == 0:
             self._json({"ok": True, "message": f"{mp} をアンマウントしました"}); return
         self._json({"error": f"アンマウント失敗: {((r.stderr or r.stdout) or '').strip().split(chr(10))[0][:200]}"})
+
+    def _handle_part_mount(self, data):
+        """パーティションのマウント（一時的／fstab永続）。実行中ジョブがある場合は保護"""
+        err = self._part_busy_guard()
+        if err:
+            self._json({"error": err}); return
+        part = ((data.get("part") or data.get("path") or "")).strip()
+        mountpoint = (data.get("mountpoint") or "").strip()
+        persistent = bool(data.get("persistent"))
+        if not part:
+            self._json({"error": "パーティションを指定してください"}); return
+        if not mountpoint:
+            self._json({"error": "マウントパスを指定してください"}); return
+        res = part_mount(part, mountpoint, persistent)
+        self._json(res, 200 if res.get("ok") else 400)
 
     def _part_busy_guard(self):
         if self._any_running():
