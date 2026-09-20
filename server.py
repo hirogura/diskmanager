@@ -13,7 +13,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.1.5"
+VERSION = "0.2.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2016,7 +2016,7 @@ def _part_refresh(disk):
 
 def _part_guard(path, for_create_disk=False, allow_system=False):
     """共通ガード：形式・存在・システムドライブ・マウントを検証。NG時はエラー文、OK時は participles(disk)
-    allow_system=True の場合のみシステムドライブを許可する（btrfs縮小など例外操作用）"""
+    allow_system=True の場合のみシステムドライブを許可する（btrfs拡縮小・空き領域への作成など例外操作用）"""
     disk = path if for_create_disk else _part_parent_disk(path)
     if not disk:
         # ディスク指定（作成時）または親解決失敗
@@ -2292,7 +2292,9 @@ PART_MKFS = {
 
 def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type=""):
     """空き領域にパーティションを作成し、ファイルシステムを初期化する
-    未初期化ディスクでは table_type（gpt/msdos、既定gpt）で先に初期化してから作成する"""
+    未初期化ディスクでは table_type（gpt/msdos、既定gpt）で先に初期化してから作成する
+    システムドライブ上の空き領域への作成も許可する（既存パーティションには触れないため安全。
+    未初期化ディスクの自動初期化・テーブル操作自体はシステムドライブでは引き続き拒否）"""
     disk = (disk or "").strip()
     fstype = (fstype or "").strip().lower()
     try:
@@ -2301,7 +2303,8 @@ def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type
         return {"ok": False, "error": "サイズが不正です"}
     if not WIPE_PATH_RE.match(disk):
         return {"ok": False, "error": f"不正なデバイス指定です: {disk}"}
-    d, err = _part_guard(disk, for_create_disk=True)
+    is_system_disk = (disk == get_system_disk())
+    d, err = _part_guard(disk, for_create_disk=True, allow_system=True)
     if err:
         return {"ok": False, "error": err}
     if fstype not in PART_MKFS:
@@ -2315,8 +2318,11 @@ def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type
     if size_bytes < 16 * MIB:
         return {"ok": False, "error": "サイズは 16MiB 以上を指定してください"}
     # 未初期化ディスクは先にパーティションテーブルを作成する
+    # （システムドライブの初期化は危険なため拒否。空き領域への作成のみ許可）
     table, _, frees = _parted_parse_free(disk)
     if table in ("", "unknown") and not frees:
+        if is_system_disk:
+            return {"ok": False, "error": f"{disk} はシステムドライブのため初期化できません"}
         want = (table_type or "gpt").strip().lower()
         if want not in ("gpt", "msdos"):
             return {"ok": False, "error": f"テーブル種別は gpt/msdos を指定してください: {table_type}"}

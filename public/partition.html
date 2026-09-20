@@ -114,8 +114,9 @@ input[type=range]{width:100%;accent-color:#38bdf8}
     <div class="warn">
         <strong>警告：パーティション操作はデータを失う危険があります。</strong><br>
         拡大・縮小・作成・削除のいずれも、対象ディスク・パーティションをよく確認してから実行してください。<br>
-        マウント中のパーティションとシステムドライブは保護のため操作できません（先にアンマウントしてください）。<br>
+        マウント中のパーティションとシステムドライブ上の既存パーティションは保護のため操作できません（先にアンマウントしてください）。<br>
         ただし <b>btrfs</b> はオンライン拡縮小に対応しているため、マウント中（システムドライブ含む）でも拡縮小が可能です。<br>
+        システムドライブ上の空き領域への新規作成は可能です。<br>
         縮小は使用中容量以下にはできません。xfs の縮小と vfat の拡縮小（fatresize未導入時）は未対応です。
     </div>
     <div class="install-banner" id="install-banner">
@@ -299,7 +300,7 @@ function mountCell(d, p) {
 function renderDisk(d) {
     const div = document.createElement('div');
     div.className = 'dev';
-    const sysBadge = d.is_system ? '<span class="sys-badge">システム（btrfs拡縮小のみ可）</span>' : '';
+    const sysBadge = d.is_system ? '<span class="sys-badge">システム（作成・btrfs拡縮小のみ可）</span>' : '';
     const mntNote = (!d.is_system && d.has_mount) ? '<div class="mount-warn">※ マウント中のパーティションは操作前にアンマウントしてください</div>' : '';
     // パーティションテーブルが無い未初期化ディスク（/dev/sdc等の空ドライブ）は
     // ディスク全体を選択して初期化→作成できるようにする
@@ -890,10 +891,10 @@ function renderOp() {
         return;
     }
     if (sel.isSystem) {
-        // システムドライブは btrfs 拡縮小のみ例外許可。それ以外は保護
+        // システムドライブは btrfs 拡縮小と空き領域への作成のみ例外許可。それ以外は保護
         const d0 = devices.find(x => x.path === sel.disk);
         const p0 = (sel.kind === 'part') ? sel.part : null;
-        if (!(sel.kind === 'part' && d0 && isSysBtrfs(d0, p0))) {
+        if (!((sel.kind === 'part' && d0 && isSysBtrfs(d0, p0)) || sel.kind === 'free')) {
             // 例外：システム外パーティションのアンマウントのみ許可（例: /dev/vda3）
             if (p0 && p0.mountpoint && !p0.system_part) {
                 body.innerHTML =
@@ -903,7 +904,7 @@ function renderOp() {
                     '<div class="btn-group"><button class="btn btn-secondary" onclick="doUnmount()" ' + (busy ? 'disabled' : '') + '>アンマウント</button></div>';
                 return;
             }
-            body.innerHTML = '<div class="op-info"><b>' + esc(sel.disk) + '</b> はシステムドライブのため操作できません（btrfsの拡縮小のみ対応）。</div>';
+            body.innerHTML = '<div class="op-info"><b>' + esc(sel.disk) + '</b> はシステムドライブのため操作できません（空き領域への作成・btrfsの拡縮小のみ対応）。</div>';
             return;
         }
     }
@@ -1008,7 +1009,7 @@ function renderOp() {
         const freeMaxMiB = canCreate ? freeMiB : 16;
         // パーティションテーブルだけのドライブ（パーティション数0・テーブルあり）は
         // テーブル削除ボタンを作成ボタンの右に表示する
-        const isTableOnly = d && ((d.partitions || []).length === 0) && !d.needs_init &&
+        const isTableOnly = d && !d.is_system && ((d.partitions || []).length === 0) && !d.needs_init &&
             d.table && d.table !== '不明';
         body.innerHTML =
             '<div class="op-info"><b>' + esc(sel.disk) + '</b> 上の空き領域（' + esc(f.size) + '）に新規パーティションを作成します。</div>' +
