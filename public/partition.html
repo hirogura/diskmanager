@@ -446,13 +446,30 @@ function frontExpandInfo(d, part) {
         totalBytes: d.size_bytes || 1,
         freeStart: bef.start_bytes, freeBytes: bef.size_bytes || 0};
 }
+// 縮小下限（MiB）。バックエンドの「使用中*1.05+64MiB以下は不可」を
+// 等号側で回避するため floor+1 にする（概算のままだと等号で弾かれることがある）
+function shrinkMinMiB(part) {
+    if (part.used_bytes) return Math.floor(part.used_bytes * 1.05 / 1048576 + 64) + 1;
+    return 16;
+}
+// 拡大上限（MiB）。直後空きの末尾から逆算した厳密値で、バックエンドの
+// 受入条件（空き末尾以内・拡大幅1MiB以上）と同式。満たさなければ null
+function expandLimits(d, part) {
+    const adj = d ? adjacentFreeAfter(d, part) : null;
+    if (!adj || !(part.start_bytes > 0) || !(part.end_bytes > 0)) return null;
+    if (adj.start_bytes > part.end_bytes + 1) return null;
+    const maxMiB = Math.floor((adj.end_bytes + 1 - part.start_bytes) / 1048576);
+    const curEndBased = part.end_bytes - part.start_bytes;
+    if (!(maxMiB * 1048576 >= curEndBased + 1048576)) return null;
+    return {maxMiB: maxMiB, adj: adj};
+}
 // 選択中パーティションのドラッグ用リサイズ範囲。拡縮小余地がなければ null
 function selectedResizeInfo(d, part) {
     if (!d || !part || d.is_system || part.mountpoint) return null;
     const curMiB = fmtMiB(part.size_bytes || 0);
-    const minMiB = part.used_bytes ? Math.ceil(part.used_bytes * 1.05 / 1048576) + 64 : 16;
-    const adj = adjacentFreeAfter(d, part);
-    const maxMiB = curMiB + (adj ? fmtMiB(adj.size_bytes) : 0);
+    const minMiB = shrinkMinMiB(part);
+    const exp = expandLimits(d, part);
+    const maxMiB = exp ? exp.maxMiB : curMiB;
     if (!(maxMiB > minMiB)) return null;
     return {curMiB: curMiB, minMiB: minMiB, maxMiB: maxMiB,
         curBytes: part.size_bytes || 0, totalBytes: d.size_bytes || 1};
@@ -805,8 +822,8 @@ function renderOp() {
     const d = devices.find(x => x.path === sel.disk);
     if (sel.kind === 'uninit') {
         // 未初期化ディスク：テーブル種別を選び、初期化＋作成を一括実行する
-        // （管理領域を除いた概算上限。厳密な空きは初期化後に確定する）
-        const maxMiB = d && d.size_bytes ? Math.max(16, fmtMiB(d.size_bytes) - 2) : 16;
+        // （管理領域＋作成時の1MiB余裕を除いた概算上限。厳密な空きは初期化後に確定する）
+        const maxMiB = d && d.size_bytes ? Math.max(16, Math.floor(d.size_bytes / 1048576) - 4) : 16;
         body.innerHTML =
             '<div class="op-info"><b>' + esc(sel.disk) + '</b> は未初期化ディスクです（' + esc(d ? d.size : '') + '）。<br>' +
             'パーティションテーブルを作成して新規パーティションを作成します。</div>' +
@@ -829,9 +846,10 @@ function renderOp() {
         const p = sel.part;
         const curMiB = fmtMiB(p.size_bytes);
         const usedMiB = p.used_bytes ? fmtMiB(p.used_bytes) : 0;
-        const minMiB = p.used_bytes ? Math.ceil(p.used_bytes * 1.05 / 1048576) + 64 : 16;
+        const minMiB = shrinkMinMiB(p);
         const adj = d ? adjacentFreeAfter(d, p) : null;
-        const maxMiB = curMiB + (adj ? fmtMiB(adj.size_bytes) : 0);
+        const exp = (!p.mountpoint && d && !d.is_system) ? expandLimits(d, p) : null;
+        const maxMiB = exp ? exp.maxMiB : curMiB;
         const canResize = maxMiB > minMiB;
         const bef = d ? adjacentFreeBefore(d, p) : null;
         const moveToMiB = bef ? Math.ceil(bef.start_bytes / 1048576) : 0;
@@ -884,7 +902,10 @@ function renderOp() {
                   '※ 前方移動はデータのブロックコピー＋テーブル更新で行います（サイズ・内容は不変、FS種別を問いません）。処理には時間がかかる場合があります。</div>');
     } else {
         const f = sel.free;
-        const freeMiB = fmtMiB(f.size_bytes);
+        // 作成上限（MiB）。バックエンドは「サイズ+1MiB≦空き」を要求するため厳密式にする
+        const freeMiB = Math.floor(((f.size_bytes || 0) - 1048576) / 1048576);
+        const canCreate = freeMiB >= 16;
+        const freeMaxMiB = canCreate ? freeMiB : 16;
         // パーティションテーブルだけのドライブ（パーティション数0・テーブルあり）は
         // テーブル削除ボタンを作成ボタンの右に表示する
         const isTableOnly = d && ((d.partitions || []).length === 0) && !d.needs_init &&
@@ -895,12 +916,13 @@ function renderOp() {
             '<select id="mk-fstype"><option value="ext4">ext4（Linux標準）</option><option value="btrfs">btrfs</option>' +
             '<option value="xfs">xfs</option><option value="ntfs">ntfs（Windows共用）</option>' +
             '<option value="vfat">vfat(FAT32・共用)</option><option value="exfat">exfat（共用・大容量）</option></select></div>' +
-            '<div class="form-group"><label>サイズ（MiB）<span style="color:#64748b">：最大 ' + freeMiB + ' MiB</span></label>' +
-            '<input type="range" id="mk-size" min="16" max="' + freeMiB + '" value="' + freeMiB + '" oninput="document.getElementById(\'mk-size-num\').value=this.value">' +
-            '<input type="number" id="mk-size-num" value="' + freeMiB + '" min="16" max="' + freeMiB + '" oninput="document.getElementById(\'mk-size\').value=this.value"></div>' +
+            '<div class="form-group"><label>サイズ（MiB）<span style="color:#64748b">：最大 ' + freeMaxMiB + ' MiB</span></label>' +
+            '<input type="range" id="mk-size" min="16" max="' + freeMaxMiB + '" value="' + freeMaxMiB + '" oninput="document.getElementById(\'mk-size-num\').value=this.value">' +
+            '<input type="number" id="mk-size-num" value="' + freeMaxMiB + '" min="16" max="' + freeMaxMiB + '" oninput="document.getElementById(\'mk-size\').value=this.value">' +
+            (!canCreate ? '<div class="help-text"><b style="color:#f87171">空きが小さすぎて16MiBを作成できません。</b></div>' : '') + '</div>' +
             '<div class="form-group"><label>ラベル（任意）</label><input type="text" id="mk-label" placeholder="例: data" maxlength="32">' +
             '<div class="help-text">vfat は11文字まで（自動で大文字化）。空欄可。</div></div>' +
-            '<div class="btn-group"><button class="btn btn-primary" onclick="doCreate()" ' + (busy ? 'disabled' : '') + '>パーティションを作成</button>' +
+            '<div class="btn-group"><button class="btn btn-primary" onclick="doCreate()" ' + ((busy || !canCreate) ? 'disabled' : '') + '>パーティションを作成</button>' +
             (isTableOnly ? '<button class="btn btn-danger" onclick="doDeleteTable()" ' + (busy ? 'disabled' : '') + '>パーティションテーブルを削除</button>' : '') + '</div>' +
             (isTableOnly ? '<div class="note">※ パーティションが無いため、不要であればパーティションテーブル自体を削除して未初期化に戻せます。</div>' : '');
     }
