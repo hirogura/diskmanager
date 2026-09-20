@@ -5,6 +5,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 import signal
 import threading
@@ -12,7 +13,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.0.9"
+VERSION = "0.1.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -1941,8 +1942,9 @@ def _part_refresh(disk):
     time.sleep(1)
 
 
-def _part_guard(path, for_create_disk=False):
-    """共通ガード：形式・存在・システムドライブ・マウントを検証。NG時はエラー文、OK時は participles(disk)"""
+def _part_guard(path, for_create_disk=False, allow_system=False):
+    """共通ガード：形式・存在・システムドライブ・マウントを検証。NG時はエラー文、OK時は participles(disk)
+    allow_system=True の場合のみシステムドライブを許可する（btrfs縮小など例外操作用）"""
     disk = path if for_create_disk else _part_parent_disk(path)
     if not disk:
         # ディスク指定（作成時）または親解決失敗
@@ -1953,11 +1955,29 @@ def _part_guard(path, for_create_disk=False):
         return None, f"不正なデバイス指定です: {path}"
     if not os.path.exists(path if not for_create_disk else disk):
         return None, f"デバイスが見つかりません: {path}"
-    if disk == get_system_disk():
+    if disk == get_system_disk() and not allow_system:
         return None, f"{disk} はシステムドライブのため操作できません"
     if not shutil.which("parted"):
         return None, "parted が利用できません（先にツールをインストールしてください）"
     return disk, ""
+
+
+def _btrfs_mountpoint(part):
+    """btrfs操作用のマウントポイントを返す。findmnt優先（/ を最優先）、無ければlsblk。無ければ空文字。
+    btrfs filesystem resize はマウント中のパスが必須のため"""
+    try:
+        r = subprocess.run(["findmnt", "-n", "-o", "TARGET", "--source", part],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            targets = [ln.strip() for ln in (r.stdout or "").split("\n") if ln.strip()]
+            if targets:
+                # ルート (/) が含まれればそれを優先（システムドライブの確実な操作点）
+                if "/" in targets:
+                    return "/"
+                return targets[0]
+    except Exception:
+        pass
+    return get_dev_mountpoint(part)
 
 
 def part_mklabel(disk, table_type):
@@ -2211,7 +2231,9 @@ def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type
 
 
 def part_resize(part, new_size_bytes):
-    """パーティションの拡縮小。ext4/ntfs はFS連動、xfs/btrfs は拡大のみ（FS拡張は別途案内）"""
+    """パーティションの拡縮小。ext4/ntfs/btrfs はFS連動、xfs は拡大のみ（FS拡張は別途案内）。
+    btrfs はオンライン縮小に対応しているため、システムドライブ上の btrfs に限り
+    縮小のみ例外的に許可する（マウント解除不要。FS縮小→パーティション縮小の順で行う）"""
     part = (part or "").strip()
     try:
         new_size_bytes = int(new_size_bytes or 0)
@@ -2219,10 +2241,20 @@ def part_resize(part, new_size_bytes):
         return {"ok": False, "error": "サイズが不正です"}
     if not PART_DEV_RE.match(part):
         return {"ok": False, "error": f"不正なデバイス指定です: {part}"}
-    disk, err = _part_guard(part)
+    if not os.path.exists(part):
+        return {"ok": False, "error": f"デバイスが見つかりません: {part}"}
+    tmp_disk = _part_parent_disk(part)
+    if not tmp_disk:
+        return {"ok": False, "error": f"親ディスクを特定できません: {part}"}
+    if not WIPE_PATH_RE.match(tmp_disk):
+        return {"ok": False, "error": f"不正なデバイス指定です: {part}"}
+    if not shutil.which("parted"):
+        return {"ok": False, "error": "parted が利用できません（先にツールをインストールしてください）"}
+    is_system = (tmp_disk == get_system_disk())
+    disk, err = _part_guard(part, allow_system=is_system)
     if err:
         return {"ok": False, "error": err}
-    if get_dev_mountpoint(part):
+    if not is_system and get_dev_mountpoint(part):
         return {"ok": False, "error": f"{part} はマウント中のため変更できません（先にアンマウントしてください）"}
     num = _part_number(disk, part)
     if not num:
@@ -2249,6 +2281,13 @@ def part_resize(part, new_size_bytes):
             used_bytes = int(devs[0].get("fsused", 0) or 0)
     except Exception:
         pass
+    if is_system:
+        # システムドライブは btrfs の縮小のみ許可（オンライン縮小が可能なため）。
+        # 拡大・移動・他FSは引き続き保護する
+        if fstype != "btrfs":
+            return {"ok": False, "error": f"{tmp_disk} はシステムドライブのため操作できません（btrfsの縮小のみ対応）"}
+        if new_size_bytes > cur_size:
+            return {"ok": False, "error": "システムドライブの拡大は対応していません（btrfsの縮小のみ対応）"}
     if new_size_bytes > cur_size:
         # --- 拡大：後続の空きが連続している必要がある ---
         new_end = start_b + new_size_bytes
@@ -2322,8 +2361,55 @@ def part_resize(part, new_size_bytes):
         new_end_al = (new_end // MIB) * MIB
         if new_end_al <= start_b + 16 * MIB:
             return {"ok": False, "error": "縮小後のサイズが小さすぎます"}
-        if fstype in ("xfs", "btrfs"):
+        if fstype in ("xfs",):
             return {"ok": False, "error": f"{fstype} の縮小は未対応です（拡大のみ対応）"}
+        if fstype in ("btrfs",):
+            if shutil.which("btrfs") is None:
+                return {"ok": False, "error": "btrfs コマンドが利用できません（btrfs-progsをインストールしてください）"}
+            target_size = new_end_al - start_b
+            target_mib = target_size // MIB
+            if target_mib < 16:
+                return {"ok": False, "error": "縮小後のサイズが小さすぎます"}
+            mp = _btrfs_mountpoint(part)
+            own_mount = False
+            tmpdir = ""
+            if not mp:
+                # 非システムの未マウント btrfs は一時マウントしてオンライン縮小する
+                # （btrfs のオフライン縮小は未対応のため）。システムは常時マウントのはず
+                if is_system:
+                    return {"ok": False, "error": f"{part} のマウントポイントを特定できません（マウント中の btrfs が必要です）"}
+                try:
+                    tmpdir = tempfile.mkdtemp(prefix="dm-btrfs-")
+                except Exception as e:
+                    return {"ok": False, "error": f"一時マウント先を作成できません: {e}"}
+                rc, out = _run_cmd(["mount", part, tmpdir], timeout=120)
+                if rc != 0:
+                    try:
+                        os.rmdir(tmpdir)
+                    except Exception:
+                        pass
+                    return {"ok": False, "error": f"一時マウントに失敗しました: {out[:300]}"}
+                mp = tmpdir
+                own_mount = True
+            try:
+                rc, out = _run_cmd(["btrfs", "filesystem", "resize", f"{target_mib}M", mp], timeout=1800)
+            finally:
+                if own_mount:
+                    _run_cmd(["umount", tmpdir], timeout=120)
+                    try:
+                        os.rmdir(tmpdir)
+                    except Exception:
+                        pass
+            if rc != 0:
+                return {"ok": False, "error": f"btrfs縮小に失敗しました: {out[:300]}"}
+            rc, out = _parted_resizepart(disk, num, new_end_al)
+            if rc != 0:
+                return {"ok": False, "error": f"FSは縮小済みですがパーティション縮小に失敗しました: {out[:300]}"}
+            _part_refresh(disk)
+            if is_system:
+                return {"ok": True,
+                    "message": f"{part} を縮小しました（btrfsオンライン連動）。カーネル反映のため再起動してください"}
+            return {"ok": True, "message": f"{part} を縮小しました（btrfs連動）"}
         if fstype in ("ext4",):
             if shutil.which("resize2fs") is None or shutil.which("e2fsck") is None:
                 return {"ok": False, "error": "e2fsck/resize2fs が利用できません"}

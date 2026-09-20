@@ -101,7 +101,8 @@ input[type=range]{width:100%;accent-color:#38bdf8}
         <strong>警告：パーティション操作はデータを失う危険があります。</strong><br>
         拡大・縮小・作成・削除のいずれも、対象ディスク・パーティションをよく確認してから実行してください。<br>
         マウント中のパーティションとシステムドライブは保護のため操作できません（先にアンマウントしてください）。<br>
-        縮小は使用中容量以下にはできません。xfs / btrfs の縮小と vfat の拡縮小（fatresize未導入時）は未対応です。
+        ただしシステムドライブ上の <b>btrfs</b> はオンライン縮小に対応しているため縮小のみ可能です（マウント解除不要・再起動で確定）。<br>
+        縮小は使用中容量以下にはできません。xfs の縮小と vfat の拡縮小（fatresize未導入時）は未対応です。
     </div>
     <div class="install-banner" id="install-banner">
         <span id="install-msg">パーティション操作には <b>parted</b> が必要です。</span>
@@ -139,6 +140,10 @@ const FS_COLORS = {
 function fsColor(fstype) {
     fstype = (fstype || '').toLowerCase();
     return FS_COLORS[fstype] || '#0891b2';
+}
+// システムドライブ上の btrfs はオンライン縮小のみ許可する例外判定
+function isSysBtrfsShrinkable(d, p) {
+    return !!(d && d.is_system && p && ((p.fstype || '').toLowerCase() === 'btrfs'));
 }
 function esc(s) {
     return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -244,7 +249,7 @@ function segTitle(p) {
 function renderDisk(d) {
     const div = document.createElement('div');
     div.className = 'dev';
-    const sysBadge = d.is_system ? '<span class="sys-badge">システム（操作不可）</span>' : '';
+    const sysBadge = d.is_system ? '<span class="sys-badge">システム（btrfs縮小のみ可）</span>' : '';
     const mntNote = (!d.is_system && d.has_mount) ? '<div class="mount-warn">※ マウント中のパーティションは操作前にアンマウントしてください</div>' : '';
     // パーティションテーブルが無い未初期化ディスク（/dev/sdc等の空ドライブ）は
     // ディスク全体を選択して初期化→作成できるようにする
@@ -281,9 +286,9 @@ function renderDisk(d) {
             const selected = isSel ? ' selected' : '';
             const short = p.path.replace(d.path, '').replace('/dev/', '') || p.path;
             // 選択中のパーティションの右端にドラッグ用ハンドルを付ける
-            // （マウント中・システム・拡縮小余地なしの場合は付けない）
+            // （システム非btrfs・マウント中（システムbtrfs縮小例外を除く）・拡縮小余地なしの場合は付けない）
             let handle = '';
-            if (isSel && !d.is_system && !p.mountpoint && !busy) {
+            if (isSel && !busy && ((!d.is_system && !p.mountpoint) || isSysBtrfsShrinkable(d, p))) {
                 const info = selectedResizeInfo(d, p);
                 if (info) {
                     handle = '<div class="resize-handle" title="右端をドラッグでサイズ変更（' +
@@ -464,12 +469,22 @@ function expandLimits(d, part) {
     return {maxMiB: maxMiB, adj: adj};
 }
 // 選択中パーティションのドラッグ用リサイズ範囲。拡縮小余地がなければ null
+// （システムドライブは btrfs 縮小のみ許可。マウント中も同例外でのみ許可）
 function selectedResizeInfo(d, part) {
-    if (!d || !part || d.is_system || part.mountpoint) return null;
+    if (!d || !part || busy) return null;
+    const sysBtrfs = isSysBtrfsShrinkable(d, part);
+    if (d.is_system && !sysBtrfs) return null;
+    if (part.mountpoint && !sysBtrfs) return null;
     const curMiB = fmtMiB(part.size_bytes || 0);
     const minMiB = shrinkMinMiB(part);
-    const exp = expandLimits(d, part);
-    const maxMiB = exp ? exp.maxMiB : curMiB;
+    let maxMiB;
+    if (sysBtrfs) {
+        // システムbtrfsは縮小のみ（マウント中のため拡大余地判定なし）
+        maxMiB = curMiB;
+    } else {
+        const exp = expandLimits(d, part);
+        maxMiB = exp ? exp.maxMiB : curMiB;
+    }
     if (!(maxMiB > minMiB)) return null;
     return {curMiB: curMiB, minMiB: minMiB, maxMiB: maxMiB,
         curBytes: part.size_bytes || 0, totalBytes: d.size_bytes || 1};
@@ -816,8 +831,13 @@ function renderOp() {
         return;
     }
     if (sel.isSystem) {
-        body.innerHTML = '<div class="op-info"><b>' + esc(sel.disk) + '</b> はシステムドライブのため操作できません。</div>';
-        return;
+        // システムドライブは btrfs 縮小のみ例外許可。それ以外は保護
+        const d0 = devices.find(x => x.path === sel.disk);
+        const p0 = (sel.kind === 'part') ? sel.part : null;
+        if (!(sel.kind === 'part' && d0 && isSysBtrfsShrinkable(d0, p0))) {
+            body.innerHTML = '<div class="op-info"><b>' + esc(sel.disk) + '</b> はシステムドライブのため操作できません（btrfsの縮小のみ対応）。</div>';
+            return;
+        }
     }
     const d = devices.find(x => x.path === sel.disk);
     if (sel.kind === 'uninit') {
@@ -844,12 +864,13 @@ function renderOp() {
     }
     if (sel.kind === 'part') {
         const p = sel.part;
+        const sysBtrfs = d ? isSysBtrfsShrinkable(d, p) : false;
         const curMiB = fmtMiB(p.size_bytes);
         const usedMiB = p.used_bytes ? fmtMiB(p.used_bytes) : 0;
         const minMiB = shrinkMinMiB(p);
         const adj = d ? adjacentFreeAfter(d, p) : null;
         const exp = (!p.mountpoint && d && !d.is_system) ? expandLimits(d, p) : null;
-        const maxMiB = exp ? exp.maxMiB : curMiB;
+        const maxMiB = sysBtrfs ? curMiB : (exp ? exp.maxMiB : curMiB);
         const canResize = maxMiB > minMiB;
         const bef = d ? adjacentFreeBefore(d, p) : null;
         const moveToMiB = bef ? Math.ceil(bef.start_bytes / 1048576) : 0;
@@ -875,28 +896,34 @@ function renderOp() {
         body.innerHTML =
             '<div class="op-info"><b>' + esc(p.path) + '</b>（' + esc(p.size) + ' / ' + esc(p.fstype || 'FS不明') + '）<br>' +
             '使用中: ' + esc(p.used || '不明') + (p.mountpoint ? ' ｜ マウント中: <b class="mount-warn">' + esc(p.mountpoint) + '</b>' : ' ｜ 未マウント') +
-            (p.label ? ' ｜ ラベル: ' + esc(p.label) : '') + '</div>' +
-            (p.mountpoint
+            (p.label ? ' ｜ ラベル: ' + esc(p.label) : '') +
+            (sysBtrfs ? '<br><b style="color:#eab308">システムドライブのため縮小のみ可能です（オンライン縮小・再起動で確定）。</b>' : '') + '</div>' +
+            ((p.mountpoint && !sysBtrfs)
                 ? '<div class="btn-group"><button class="btn btn-secondary" onclick="doUnmount()" ' + (busy ? 'disabled' : '') + '>アンマウント</button></div>'
                 : '<div class="form-group" style="margin-top:12px"><label>新しいサイズ（MiB）<span style="color:#64748b">：現在 ' + curMiB + ' MiB' +
-                  (adj ? '／直後の空き ' + fmtMiB(adj.size_bytes) + ' MiB' : '／直後に空きなし') +
-                  (bef ? '／直前の空き ' + fmtMiB(bef.size_bytes) + ' MiB' : '') + '</span></label>' +
+                  (sysBtrfs ? '／縮小のみ（最小 ' + minMiB + ' MiB）'
+                   : (adj ? '／直後の空き ' + fmtMiB(adj.size_bytes) + ' MiB' : '／直後に空きなし') +
+                     (bef ? '／直前の空き ' + fmtMiB(bef.size_bytes) + ' MiB' : '')) + '</span></label>' +
                   '<input type="range" id="rs-size" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" value="' + curMiB + '" oninput="document.getElementById(\'rs-size-num\').value=this.value">' +
                   '<input type="number" id="rs-size-num" value="' + curMiB + '" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" oninput="document.getElementById(\'rs-size\').value=this.value">' +
-                  '<div class="help-text">使用中 ' + (p.used || '不明') + ' のため ' + minMiB + ' MiB 以上が必要です。小さくすると縮小、大きくすると拡大します（拡大には直後の空きが必要）。' +
+                  '<div class="help-text">使用中 ' + (p.used || '不明') + ' のため ' + minMiB + ' MiB 以上が必要です。' +
+                  (sysBtrfs ? 'システムドライブのため小さくする縮小のみ可能です（オンラインでbtrfs縮小→パーティション縮小を行い、再起動で確定します）。'
+                   : '小さくすると縮小、大きくすると拡大します（拡大には直後の空きが必要）。') +
                   '<br>選択中のグラフ右端にカーソルを合わせると↔に変わり、ドラッグでもサイズを調整できます（確定には下の「サイズ変更を実行」が必要です）。' +
                   '<br>縮小・拡大とも対象のみ変更し、後続パーティションの位置は変わりません（増減分は直後の空きに出入りします）。' +
-                  (!canResize ? '<br><b style="color:#f87171">拡大・縮小できる余地がありません。</b>' : '') +
-                  (canMove ? '<br>直前の空き先頭（' + moveToMiB + ' MiB付近）へ移動できます。' : '') + '</div></div>' +
+                  (!canResize ? '<br><b style="color:#f87171">' + (sysBtrfs ? '縮小できる余地がありません。' : '拡大・縮小できる余地がありません。') + '</b>' : '') +
+                  (!sysBtrfs && canMove ? '<br>直前の空き先頭（' + moveToMiB + ' MiB付近）へ移動できます。' : '') + '</div></div>' +
                   frontBlock +
                   moveBlock +
                   '<div class="btn-group">' +
-                  '<button class="btn btn-secondary" onclick="doMoveForward()" ' + (busy || !canMove ? 'disabled' : '') + '>前方に移動</button>' +
-                  '<button class="btn btn-primary" onclick="doResize()" ' + (busy || !canResize ? 'disabled' : '') + '>サイズ変更を実行</button>' +
-                  '<button class="btn btn-danger" onclick="doDelete()" ' + (busy ? 'disabled' : '') + '>パーティションを削除</button>' +
+                  (sysBtrfs ? ''
+                   : '<button class="btn btn-secondary" onclick="doMoveForward()" ' + (busy || !canMove ? 'disabled' : '') + '>前方に移動</button>') +
+                  '<button class="btn btn-primary" onclick="doResize()" ' + (busy || !canResize ? 'disabled' : '') + '>' + (sysBtrfs ? '縮小を実行' : 'サイズ変更を実行') + '</button>' +
+                  (sysBtrfs ? ''
+                   : '<button class="btn btn-danger" onclick="doDelete()" ' + (busy ? 'disabled' : '') + '>パーティションを削除</button>') +
                   '</div>' +
-                  '<div class="note">※ xfs / btrfs は拡大のみ対応（FS拡張は別途案内します）。vfat の拡縮小は fatresize 未導入のため未対応です。<br>' +
-                  '※ 縮小はファイルシステム連動で行います（ext4 / NTFS）。処理には時間がかかる場合があります。<br>' +
+                  '<div class="note">※ xfs は拡大のみ対応（FS拡張は別途案内します）。btrfs は縮小・拡大とも対応（システムドライブ上は縮小のみ・マウント解除不要）。vfat の拡縮小は fatresize 未導入のため未対応です。<br>' +
+                  '※ 縮小はファイルシステム連動で行います（ext4 / NTFS / btrfs）。処理には時間がかかる場合があります。<br>' +
                   '※ 前方拡大はデータの前方コピー＋テーブル更新＋FS拡張で行います（終了位置・後続パーティションは不変）。完了まで画面を閉じずにお待ちください。<br>' +
                   '※ 位置変更（移動）はデータのブロックコピー＋テーブル更新で行います（サイズ・内容は不変、FS種別を問いません）。後方は逆順複写のため時間がかかる場合があります。<br>' +
                   '※ 前方移動はデータのブロックコピー＋テーブル更新で行います（サイズ・内容は不変、FS種別を問いません）。処理には時間がかかる場合があります。</div>');
@@ -1055,6 +1082,8 @@ async function doResize() {
     const curMiB = fmtMiB(sel.part.size_bytes);
     if (!newMiB || newMiB < 16) { notify('サイズは16MiB以上を指定してください', 'error'); return; }
     if (Math.abs(newMiB - curMiB) * 1048576 < 1048576) { notify('サイズに変化がありません', 'error'); return; }
+    const d = devices.find(x => x.path === sel.disk);
+    if (d && isSysBtrfsShrinkable(d, sel.part) && newMiB > curMiB) { notify('システムドライブは縮小のみ対応しています', 'error'); return; }
     const dir = newMiB > curMiB ? '拡大' : '縮小';
     if (!confirm(sel.path + ' を ' + curMiB + ' MiB → ' + newMiB + ' MiB に' + dir + 'します。\n' +
         (dir === '縮小' ? '縮小はデータを失う危険があります。\n' : '') + '\n本当に実行しますか？')) return;
