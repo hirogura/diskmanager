@@ -652,11 +652,22 @@ function updateResizeTip(clientX, clientY) {
     resizeDrag.tip.style.top = (clientY + 12) + 'px';
 }
 
-// 移動プレビュー用の仮空きセグ（表示上の空きが無い側への微移動時の予備）
+// 移動プレビュー用の仮空きセグ（片側にしか空きが無い場合、無い側の見た目を補う）
+// before=true: 対象の直前に挿入（後方移動時の押し出し表現）
+// before=false: 対象の直後に挿入（前方移動時に空く隙間の表現）
 function moveEnsurePreviewFree(before, freeBytes) {
     if (!resizeDrag || !resizeDrag.seg) return;
     const total = resizeDrag.totalBytes;
     let pf = resizeDrag.previewFree;
+    // 既存プレビューが逆側にある場合は作り直す（ドラッグ方向が反転した時用）
+    if (pf && pf.isConnected) {
+        const isBefore = (pf.nextElementSibling === resizeDrag.seg);
+        if (isBefore !== before) {
+            pf.remove();
+            pf = null;
+            resizeDrag.previewFree = null;
+        }
+    }
     if (!pf || !pf.isConnected) {
         pf = document.createElement('div');
         pf.className = 'seg free preview-free';
@@ -691,8 +702,9 @@ function applyResizeDragValue() {
                 const label = resizeDrag.prevSeg.querySelector('.seg-label');
                 if (label) label.textContent = '空き ' + fmtBytes(freeBytes);
                 resizeDrag.prevSeg.title = '空き領域 ' + fmtBytes(freeBytes) + '（プレビュー）';
-            } else if (shift < -524288) {
-                moveEnsurePreviewFree(true, -shift);
+            } else if (shift > 524288) {
+                // 直前に空き表示が無い場合：後方移動分だけ仮の空きを直前に挿して押し出す
+                moveEnsurePreviewFree(true, shift);
             }
             if (resizeDrag.nextSeg) {
                 const freeBytes = Math.max(0, resizeDrag.nextOrigBytes - shift);
@@ -700,8 +712,9 @@ function applyResizeDragValue() {
                 const label = resizeDrag.nextSeg.querySelector('.seg-label');
                 if (label) label.textContent = '空き ' + fmtBytes(freeBytes);
                 resizeDrag.nextSeg.title = '空き領域 ' + fmtBytes(freeBytes) + '（プレビュー）';
-            } else if (shift > 524288) {
-                moveEnsurePreviewFree(false, shift);
+            } else if (shift < -524288) {
+                // 直後に空き表示が無い場合：前方移動で空く分を仮の空きとして直後に挿す
+                moveEnsurePreviewFree(false, -shift);
             }
             if (Math.abs(shift) <= 524288 && resizeDrag.previewFree) {
                 resizeDrag.previewFree.remove();
