@@ -281,8 +281,8 @@ function segTitle(p) {
 function mountCell(d, p) {
     const mp = p.mountpoint || '';
     if (mp) {
-        // マウント中：アンマウントボタン（システムドライブは保護のため無効）
-        const sysDis = (d.is_system || busy) ? ' disabled title="システムドライブのため対象外です"' : '';
+        // マウント中：アンマウントボタン（システムパーティションは保護のため無効）
+        const sysDis = (p.system_part || busy) ? ' disabled title="システムパーティションのため対象外です"' : '';
         return '<div class="mnt-cell"><span class="mnt-path" title="' + esc(mp) + '">' + esc(mp) + '</span>' +
             '<button class="btn-mini unmount" title="アンマウントする"' + sysDis +
             ' onclick="event.stopPropagation();tableUnmount(\'' + esc(d.path) + '\',\'' + esc(p.path) + '\')">アンマウント</button></div>';
@@ -894,6 +894,15 @@ function renderOp() {
         const d0 = devices.find(x => x.path === sel.disk);
         const p0 = (sel.kind === 'part') ? sel.part : null;
         if (!(sel.kind === 'part' && d0 && isSysBtrfs(d0, p0))) {
+            // 例外：システム外パーティションのアンマウントのみ許可（例: /dev/vda3）
+            if (p0 && p0.mountpoint && !p0.system_part) {
+                body.innerHTML =
+                    '<div class="op-info"><b>' + esc(p0.path) + '</b>（' + esc(p0.size) + ' / ' + esc(p0.fstype || 'FS不明') + '）<br>' +
+                    'マウント中: <b class="mount-warn">' + esc(p0.mountpoint) + '</b><br>' +
+                    'システムドライブ上のパーティションですが、システム領域ではないためアンマウントできます。</div>' +
+                    '<div class="btn-group"><button class="btn btn-secondary" onclick="doUnmount()" ' + (busy ? 'disabled' : '') + '>アンマウント</button></div>';
+                return;
+            }
             body.innerHTML = '<div class="op-info"><b>' + esc(sel.disk) + '</b> はシステムドライブのため操作できません（btrfsの拡縮小のみ対応）。</div>';
             return;
         }
@@ -963,7 +972,7 @@ function renderOp() {
             (p.label ? ' ｜ ラベル: ' + esc(p.label) : '') +
             (sysBtrfs ? '<br><b style="color:#eab308">システムドライブのため拡縮小のみ可能です（オンライン操作・マウント解除不要）。</b>'
              : (btrfs && p.mountpoint ? '<br><b style="color:#eab308">マウント中の btrfs はオンラインで拡縮小できます（アンマウント不要）。</b>' : '')) + '</div>' +
-            ((p.mountpoint && d && !d.is_system)
+            ((p.mountpoint && !p.system_part)
                 ? '<div class="btn-group"><button class="btn btn-secondary" onclick="doUnmount()" ' + (busy ? 'disabled' : '') + '>アンマウント</button></div>'
                 : '') +
             (showResize

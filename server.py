@@ -13,7 +13,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -413,6 +413,60 @@ def get_system_disk():
         return src
     except Exception:
         return ""
+
+
+def _findmnt_source(mountpoint):
+    """指定マウントポイントの実体デバイス（/dev/xxx）を返す。btrfsサブボリューム表記は除去"""
+    try:
+        r = subprocess.run(["findmnt", "-n", "-o", "SOURCE", mountpoint],
+            capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            return ""
+        src = (r.stdout or "").strip().split("\n")[0].strip()
+        if "[" in src:
+            src = src.split("[")[0]
+        return src if src.startswith("/dev/") else ""
+    except Exception:
+        return ""
+
+
+def get_system_partitions():
+    """システム上 critical なパーティションのパス集合を返す（/・/boot・/boot/efi の実体）。
+    システムドライブ上のそれ以外（例: /dev/vda3 のようなデータ用）は含まれない"""
+    crit = set()
+    for mp in ("/", "/boot", "/boot/efi"):
+        src = _findmnt_source(mp)
+        if src:
+            crit.add(src)
+    return crit
+
+
+def is_system_mountpoint(mp):
+    """アンマウント保護すべきシステム系マウント先かを判定する"""
+    if not mp or mp.startswith("["):
+        return False
+    mp = os.path.normpath(mp.strip())
+    if mp == "/" or mp == "/boot" or mp == "/boot/efi" or mp.startswith("/boot/"):
+        return True
+    for deny in ("/boot", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
+            "/proc", "/sys", "/dev", "/run", "/var", "/home", "/root",
+            "/opt", "/srv", "/tmp"):
+        if mp == deny or mp.startswith(deny + "/"):
+            return True
+    return False
+
+
+def _part_mount_targets(part):
+    """指定パーティションの全マウント先を返す（btrfs複数マウント対応）"""
+    try:
+        r = subprocess.run(["findmnt", "-n", "-o", "TARGET", "--source", part],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            return [ln.strip() for ln in (r.stdout or "").split("\n") if ln.strip()]
+    except Exception:
+        pass
+    mp = get_dev_mountpoint(part)
+    return [mp] if mp else []
 
 
 def get_clone_status():
@@ -1873,6 +1927,7 @@ def get_part_devices():
     except Exception:
         return []
     sys_disk = get_system_disk()
+    sys_parts = get_system_partitions()
     for dev in data.get("blockdevices", []) or []:
         if dev.get("type") != "disk":
             continue
@@ -1921,6 +1976,7 @@ def get_part_devices():
                 "partlabel": (child.get("partlabel") or "").strip(),
                 "parttype": (child.get("parttype") or "").strip(),
                 "mountpoint": cmount,
+                "system_part": (cpath in sys_parts) or is_system_mountpoint(cmount),
                 "used_bytes": used, "used": _fmt_bytes(used) if used else "",
                 "avail_bytes": avail, "avail": _fmt_bytes(avail) if avail else "",
                 "use_percent": use_pct,
@@ -4101,7 +4157,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._json({"ok": True, "installing": True})
 
     def _handle_part_unmount(self, data):
-        """パーティション単体のマウント解除（swap は swapoff）。システムドライブは保護"""
+        """パーティション単体のマウント解除（swap は swapoff）。
+        保護対象はディスク単位ではなくパーティション単位（/・/boot・/boot/efi 等の
+        実体とシステム系マウント先）。システムドライブ上のそれ以外は対象外にしない"""
         if self._any_running():
             self._json({"error": "実行中はアンマウントできません"}); return
         if self._wipe_running():
@@ -4109,16 +4167,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         part = ((data.get("part") or data.get("path") or "")).strip()
         if not PART_DEV_RE.match(part):
             self._json({"error": f"不正なデバイス指定です: {part}"}); return
-        disk = _part_parent_disk(part)
-        if disk == get_system_disk():
-            self._json({"error": f"{part} はシステムドライブのため対象外です"}); return
+        if part in get_system_partitions():
+            self._json({"error": f"{part} はシステムパーティションのため対象外です"}); return
+        targets = _part_mount_targets(part)
+        if any(is_system_mountpoint(t) for t in targets):
+            self._json({"error": f"{part} はシステム領域にマウント中のため対象外です"}); return
         mp = get_dev_mountpoint(part)
         if not mp:
-            # swap の可能性を確認
+            # swap の可能性を確認（システムドライブ上の有効swapは保護）
             try:
                 r = subprocess.run(["swapon", "--show=NAME", "--noheadings"],
                     capture_output=True, text=True, timeout=10)
                 if part in (r.stdout or ""):
+                    if _part_parent_disk(part) == get_system_disk():
+                        self._json({"error": f"{part} はシステムの swap として使用中のため対象外です"}); return
                     r2 = subprocess.run(["swapoff", part],
                         capture_output=True, text=True, timeout=30)
                     if r2.returncode == 0:
@@ -4128,6 +4190,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pass
             self._json({"ok": True, "message": "マウントされていません"}); return
         if mp.startswith("["):
+            if _part_parent_disk(part) == get_system_disk():
+                self._json({"error": f"{part} はシステムの swap として使用中のため対象外です"}); return
             r = subprocess.run(["swapoff", part], capture_output=True, text=True, timeout=30)
         else:
             r = subprocess.run(["umount", mp], capture_output=True, text=True, timeout=30)
