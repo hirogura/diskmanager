@@ -13,7 +13,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -1701,24 +1701,15 @@ def _run_cmd(cmd, timeout=120, input_text=None):
 
 
 def _parted_resizepart(disk, num, end_bytes):
-    """parted resizepart を実行する。縮小時は確認プロンプト
-    （「それでも実行しますか？」）が -s 指定でも出て失敗するため、
-    ---pretend-input-tty＋Yes応答で無人化する"""
-    cur_end = None
-    try:
-        _, bounds, _ = _parted_parse_free(disk)
-        if num in bounds:
-            cur_end = bounds[num][1]
-    except Exception:
-        pass
+    """parted resizepart を実行する。確認プロンプト（縮小時のデータ警告・
+    使用中パーティションの継続確認）が -s 指定でも出て失敗するため、
+    常に ---pretend-input-tty＋Yes応答で無人化する。
+    （プロンプトが出ない場合は標準入力が無視されるだけのため無害。
+    Yes は呼び出し元の二重確認・安全検査を通過後のみ到達する）"""
     end_s = f"{int(end_bytes)}B"
-    if cur_end is not None and int(end_bytes) < cur_end:
-        # 縮小：プロンプトに Yes を自動応答させる（有限回。不足時は EOF で安全に中断）
-        return _run_cmd(["parted", "---pretend-input-tty", disk,
-            "resizepart", str(num), end_s],
-            timeout=300, input_text="Yes\n" * 8)
-    return _run_cmd(["parted", "-s", disk, "resizepart", str(num), end_s],
-        timeout=300)
+    return _run_cmd(["parted", "---pretend-input-tty", disk,
+        "resizepart", str(num), end_s],
+        timeout=300, input_text="Yes\n" * 8)
 
 
 def _fs_volume_size(part, fstype):
@@ -2232,8 +2223,8 @@ def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type
 
 def part_resize(part, new_size_bytes):
     """パーティションの拡縮小。ext4/ntfs/btrfs はFS連動、xfs は拡大のみ（FS拡張は別途案内）。
-    btrfs はオンライン縮小に対応しているため、システムドライブ上の btrfs に限り
-    縮小のみ例外的に許可する（マウント解除不要。FS縮小→パーティション縮小の順で行う）"""
+    btrfs はオンライン拡縮小に対応しているため、マウント中の btrfs（システムドライブ含む）も
+    マウント解除なしで操作できる。縮小はFS→パーティション、拡大はパーティション→FSの順で行う"""
     part = (part or "").strip()
     try:
         new_size_bytes = int(new_size_bytes or 0)
@@ -2254,8 +2245,8 @@ def part_resize(part, new_size_bytes):
     disk, err = _part_guard(part, allow_system=is_system)
     if err:
         return {"ok": False, "error": err}
-    if not is_system and get_dev_mountpoint(part):
-        return {"ok": False, "error": f"{part} はマウント中のため変更できません（先にアンマウントしてください）"}
+    # マウント中の操作は btrfs のみ許可（オンライン拡縮小が可能なため）。
+    # FS種別は後段で取得するため、ここでは判定を保留する
     num = _part_number(disk, part)
     if not num:
         return {"ok": False, "error": f"パーティション番号を特定できません: {part}"}
@@ -2282,12 +2273,12 @@ def part_resize(part, new_size_bytes):
     except Exception:
         pass
     if is_system:
-        # システムドライブは btrfs の縮小のみ許可（オンライン縮小が可能なため）。
-        # 拡大・移動・他FSは引き続き保護する
+        # システムドライブは btrfs の拡縮小のみ許可（オンライン拡縮小が可能なため）。
+        # 移動・削除・他FSは引き続き保護する
         if fstype != "btrfs":
-            return {"ok": False, "error": f"{tmp_disk} はシステムドライブのため操作できません（btrfsの縮小のみ対応）"}
-        if new_size_bytes > cur_size:
-            return {"ok": False, "error": "システムドライブの拡大は対応していません（btrfsの縮小のみ対応）"}
+            return {"ok": False, "error": f"{tmp_disk} はシステムドライブのため操作できません（btrfsの拡縮小のみ対応）"}
+    elif get_dev_mountpoint(part) and fstype != "btrfs":
+        return {"ok": False, "error": f"{part} はマウント中のため変更できません（先にアンマウントしてください）"}
     if new_size_bytes > cur_size:
         # --- 拡大：後続の空きが連続している必要がある ---
         new_end = start_b + new_size_bytes
@@ -2332,14 +2323,74 @@ def part_resize(part, new_size_bytes):
                 return {"ok": False, "error": f"NTFS拡大に失敗しました: {out[:300]}"}
             _part_refresh(disk)
             return {"ok": True, "message": f"{part} を拡大しました（NTFS連動）"}
-        if fstype in ("xfs", "btrfs"):
+        if fstype in ("xfs",):
             rc, out = _parted_resizepart(disk, num, new_end_al)
             if rc != 0:
                 return {"ok": False, "error": f"拡大に失敗しました: {out[:300]}"}
             _part_refresh(disk)
-            grow = "xfs_growfs（マウント後に実行）" if fstype == "xfs" else "btrfs filesystem resize（マウント後に実行）"
-            return {"ok": True, "message": f"{part} のパーティションを拡大しました。FS拡張は別途 {grow} が必要です",
+            return {"ok": True, "message": f"{part} のパーティションを拡大しました。FS拡張は別途 xfs_growfs（マウント後に実行）が必要です",
                 "need_fs_grow": True}
+        if fstype in ("btrfs",):
+            if shutil.which("btrfs") is None:
+                return {"ok": False, "error": "btrfs コマンドが利用できません（btrfs-progsをインストールしてください）"}
+            # 1) パーティションを先に拡大する（FSには触れないため安全）
+            rc, out = _parted_resizepart(disk, num, new_end_al)
+            if rc != 0:
+                return {"ok": False, "error": f"拡大に失敗しました: {out[:300]}"}
+            _part_refresh(disk)
+            expected = new_end_al - start_b
+            # カーネルが新サイズを認識したか確認する
+            # （使用中ディスクで再読込が拒否された場合は旧サイズのままになる）
+            try:
+                actual = get_device_size_bytes(part)
+            except Exception:
+                actual = 0
+            # 2) FSをオンラインで末尾まで拡張する（マウント必須。未マウントは一時マウントする）
+            mp = _btrfs_mountpoint(part)
+            own_mount = False
+            tmpdir = ""
+            if not mp:
+                if is_system:
+                    return {"ok": True,
+                        "message": f"{part} のパーティションを拡大しました。FS拡張は別途 btrfs filesystem resize max が必要です（マウント後に実行）",
+                        "need_fs_grow": True}
+                try:
+                    tmpdir = tempfile.mkdtemp(prefix="dm-btrfs-")
+                except Exception as e:
+                    return {"ok": True,
+                        "message": f"{part} のパーティションを拡大しました。一時マウント先を作成できないためFS拡張は別途 btrfs filesystem resize max が必要です: {e}",
+                        "need_fs_grow": True}
+                rc2, out2 = _run_cmd(["mount", part, tmpdir], timeout=120)
+                if rc2 != 0:
+                    try:
+                        os.rmdir(tmpdir)
+                    except Exception:
+                        pass
+                    return {"ok": True,
+                        "message": f"{part} のパーティションを拡大しました。一時マウントできないためFS拡張は別途 btrfs filesystem resize max が必要です: {out2[:200]}",
+                        "need_fs_grow": True}
+                mp = tmpdir
+                own_mount = True
+            try:
+                rc2, out2 = _run_cmd(["btrfs", "filesystem", "resize", "max", mp], timeout=1800)
+            finally:
+                if own_mount:
+                    _run_cmd(["umount", tmpdir], timeout=120)
+                    try:
+                        os.rmdir(tmpdir)
+                    except Exception:
+                        pass
+            if rc2 != 0:
+                return {"ok": True,
+                    "message": f"{part} のパーティションを拡大しましたがFS拡張に失敗しました: {out2[:200]}（別途 btrfs filesystem resize max が必要です）",
+                    "need_fs_grow": True}
+            if actual and actual < expected - MIB:
+                return {"ok": True,
+                    "message": f"{part} のパーティションを拡大しましたが、カーネルが新サイズを認識していません。再起動後に btrfs filesystem resize max を実行してください",
+                    "need_fs_grow": True}
+            if is_system:
+                return {"ok": True, "message": f"{part} を拡大しました（btrfsオンライン連動）"}
+            return {"ok": True, "message": f"{part} を拡大しました（btrfsオンライン連動）"}
         if fstype in ("vfat", "exfat"):
             if fstype == "vfat" and shutil.which("fatresize") is None:
                 return {"ok": False, "error": "vfat のリサイズには fatresize が必要です（未導入のため未対応）"}
