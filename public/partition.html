@@ -835,6 +835,130 @@ function applyResizeDragValue() {
     }
 }
 
+// 操作パネル→グラフの逆方向連動プレビュー（グラフ→操作パネルの逆向き）。
+// 操作パネルのバー（range/number）を動かしたら、ドライブ一覧のバー幅も追従させる。
+// いずれも元のバイト数から計算するため冪等で、選択し直すと元に戻る。
+function opSetFreeLabel(segEl, freeBytes, total) {
+    if (!segEl || !(total > 0)) return;
+    freeBytes = Math.max(0, Math.round(freeBytes || 0));
+    segEl.style.width = Math.max(0.6, freeBytes / total * 100) + '%';
+    const label = segEl.querySelector('.seg-label');
+    if (label) label.textContent = '空き ' + fmtBytes(freeBytes);
+    segEl.title = '空き領域 ' + fmtBytes(freeBytes) + '（プレビュー）';
+}
+function opClearPreview(pbar) {
+    if (!pbar) return;
+    pbar.querySelectorAll('.preview-free').forEach(el => el.remove());
+}
+// before=true: 対象の直前に挿入／false: 直後に挿入。逆側のプレビューは除去する
+function opEnsurePreview(pbar, seg, before, freeBytes, total) {
+    if (!pbar || !seg || !(total > 0)) return;
+    freeBytes = Math.max(0, Math.round(freeBytes || 0));
+    let keep = null;
+    pbar.querySelectorAll('.preview-free').forEach(el => {
+        const isBefore = (el.nextElementSibling === seg);
+        const isAfter = (el.previousElementSibling === seg);
+        if ((before && isBefore) || (!before && isAfter)) {
+            if (!keep) keep = el;
+            else el.remove();
+        } else {
+            el.remove();
+        }
+    });
+    if (!keep) {
+        keep = document.createElement('div');
+        keep.className = 'seg free preview-free';
+        keep.innerHTML = '<div class="seg-label"></div>';
+        if (before) seg.before(keep);
+        else seg.after(keep);
+    }
+    keep.style.width = Math.max(0.6, freeBytes / total * 100) + '%';
+    const label = keep.querySelector('.seg-label');
+    if (label) label.textContent = '空き ' + fmtBytes(freeBytes);
+    keep.title = 'リサイズ・移動で生じる空き ' + fmtBytes(freeBytes) + '（プレビュー）';
+}
+function opFindSeg(p) {
+    if (!p || !p.path) return null;
+    const seg = document.querySelector('.seg[data-part="' + p.path + '"]');
+    if (!seg) return null;
+    const pbar = seg.closest ? seg.closest('.pbar') : null;
+    if (!pbar) return null;
+    return {seg: seg, pbar: pbar};
+}
+// 新しいサイズバーの操作をグラフに反映する（対象幅＋直後空きを増減）
+function opPreviewSize(val) {
+    if (!sel || sel.kind !== 'part') return;
+    const d = devices.find(x => x.path === sel.disk);
+    const p = sel.part;
+    if (!d || !p) return;
+    const newMiB = parseFloat(val);
+    if (!isFinite(newMiB)) return;
+    const found = opFindSeg(p);
+    if (!found) return;
+    const total = d.size_bytes || 1;
+    const curBytes = p.size_bytes || 0;
+    const newBytes = Math.round(newMiB * 1048576);
+    found.seg.style.width = Math.max(0.6, newBytes / total * 100) + '%';
+    const delta = newBytes - curBytes;
+    const adj = adjacentFreeAfter(d, p);
+    const nextSeg = adj ? found.pbar.querySelector('[data-free="' + adj.start_bytes + '"]') : null;
+    if (nextSeg) {
+        opClearPreview(found.pbar);
+        opSetFreeLabel(nextSeg, (adj.size_bytes || 0) - delta, total);
+    } else {
+        if (delta < -524288) opEnsurePreview(found.pbar, found.seg, false, -delta, total);
+        else opClearPreview(found.pbar);
+    }
+}
+// 開始位置バー（前方拡大）の操作をグラフに反映する（対象幅＋直前空きを増減）
+function opPreviewFront(val) {
+    if (!sel || sel.kind !== 'part') return;
+    const d = devices.find(x => x.path === sel.disk);
+    const p = sel.part;
+    if (!d || !p) return;
+    const finfo = frontExpandInfo(d, p);
+    if (!finfo) return;
+    let newStartMiB = parseFloat(val);
+    if (!isFinite(newStartMiB)) return;
+    newStartMiB = Math.min(finfo.curStartMiB, Math.max(finfo.minStartMiB, newStartMiB));
+    const found = opFindSeg(p);
+    if (!found) return;
+    const total = finfo.totalBytes || d.size_bytes || 1;
+    const grow = finfo.curStartBytes - Math.round(newStartMiB * 1048576);
+    found.seg.style.width = Math.max(0.6, (finfo.curBytes + grow) / total * 100) + '%';
+    const bef = adjacentFreeBefore(d, p);
+    const prevSeg = bef ? found.pbar.querySelector('[data-free="' + bef.start_bytes + '"]') : null;
+    if (prevSeg) opSetFreeLabel(prevSeg, (bef.size_bytes || 0) - grow, total);
+}
+// 位置バー（移動）の操作をグラフに反映する（サイズ不変・前後空きを増減）
+function opPreviewMove(val) {
+    if (!sel || sel.kind !== 'part') return;
+    const d = devices.find(x => x.path === sel.disk);
+    const p = sel.part;
+    if (!d || !p) return;
+    const minfo = moveRangeInfo(d, p);
+    if (!minfo) return;
+    let newStartMiB = parseFloat(val);
+    if (!isFinite(newStartMiB)) return;
+    newStartMiB = Math.min(minfo.maxStartMiB, Math.max(minfo.minStartMiB, newStartMiB));
+    const found = opFindSeg(p);
+    if (!found) return;
+    const total = minfo.totalBytes || d.size_bytes || 1;
+    const shift = Math.round(newStartMiB * 1048576) - minfo.curStartBytes;
+    found.seg.style.width = Math.max(0.6, minfo.curBytes / total * 100) + '%';
+    const prevSeg = (minfo.prevFreeStart != null) ?
+        found.pbar.querySelector('[data-free="' + minfo.prevFreeStart + '"]') : null;
+    const nextSeg = (minfo.nextFreeStart != null) ?
+        found.pbar.querySelector('[data-free="' + minfo.nextFreeStart + '"]') : null;
+    if (prevSeg) opSetFreeLabel(prevSeg, (minfo.prevFreeBytes || 0) + shift, total);
+    else if (shift > 524288) opEnsurePreview(found.pbar, found.seg, true, shift, total);
+    if (nextSeg) opSetFreeLabel(nextSeg, (minfo.nextFreeBytes || 0) - shift, total);
+    else if (shift < -524288) opEnsurePreview(found.pbar, found.seg, false, -shift, total);
+    if (Math.abs(shift) <= 524288) opClearPreview(found.pbar);
+    // 両側に実空きがある場合は仮プレビュー不要
+    if (prevSeg && nextSeg) opClearPreview(found.pbar);
+}
+
 function resizeDragMove(e) {
     if (!resizeDrag) return;
     if (e.cancelable !== false) e.preventDefault();
@@ -950,8 +1074,8 @@ function renderOp() {
         const finfo = d ? frontExpandInfo(d, p) : null;
         const frontBlock = (!p.mountpoint && finfo) ?
             '<div class="form-group" style="margin-top:12px"><label>開始位置（MiB）<span style="color:#64748b">：現在 ' + finfo.curStartMiB + ' MiB／直前の空き ' + finfo.roomMiB + ' MiB分</span></label>' +
-            '<input type="range" id="fs-start" min="' + finfo.minStartMiB + '" max="' + finfo.curStartMiB + '" value="' + finfo.curStartMiB + '" oninput="document.getElementById(\'fs-start-num\').value=this.value">' +
-            '<input type="number" id="fs-start-num" value="' + finfo.curStartMiB + '" min="' + finfo.minStartMiB + '" max="' + finfo.curStartMiB + '" oninput="document.getElementById(\'fs-start\').value=this.value">' +
+            '<input type="range" id="fs-start" min="' + finfo.minStartMiB + '" max="' + finfo.curStartMiB + '" value="' + finfo.curStartMiB + '" oninput="document.getElementById(\'fs-start-num\').value=this.value;opPreviewFront(this.value)">' +
+            '<input type="number" id="fs-start-num" value="' + finfo.curStartMiB + '" min="' + finfo.minStartMiB + '" max="' + finfo.curStartMiB + '" oninput="document.getElementById(\'fs-start\').value=this.value;opPreviewFront(this.value)">' +
             '<div class="help-text">開始位置を前にずらして拡大します（終了位置は不変・後続パーティション不動）。グラフ左端のドラッグでも調整できます。縮小方向（開始位置を後ろへ）には未対応です。</div></div>' +
             '<div class="btn-group">' +
             '<button class="btn btn-primary" onclick="doExpandFront()" ' + (busy ? 'disabled' : '') + '>前方に拡大を実行</button>' +
@@ -959,8 +1083,8 @@ function renderOp() {
         const minfo = d ? moveRangeInfo(d, p) : null;
         const moveBlock = (!p.mountpoint && minfo) ?
             '<div class="form-group" style="margin-top:12px"><label>位置・開始位置（MiB）<span style="color:#64748b">：現在 ' + minfo.curStartMiB + ' MiB／可動範囲 ' + minfo.minStartMiB + '〜' + minfo.maxStartMiB + ' MiB（サイズ不変）</span></label>' +
-            '<input type="range" id="mv-start" min="' + minfo.minStartMiB + '" max="' + minfo.maxStartMiB + '" value="' + minfo.curStartMiB + '" oninput="document.getElementById(\'mv-start-num\').value=this.value">' +
-            '<input type="number" id="mv-start-num" value="' + minfo.curStartMiB + '" min="' + minfo.minStartMiB + '" max="' + minfo.maxStartMiB + '" oninput="document.getElementById(\'mv-start\').value=this.value">' +
+            '<input type="range" id="mv-start" min="' + minfo.minStartMiB + '" max="' + minfo.maxStartMiB + '" value="' + minfo.curStartMiB + '" oninput="document.getElementById(\'mv-start-num\').value=this.value;opPreviewMove(this.value)">' +
+            '<input type="number" id="mv-start-num" value="' + minfo.curStartMiB + '" min="' + minfo.minStartMiB + '" max="' + minfo.maxStartMiB + '" oninput="document.getElementById(\'mv-start\').value=this.value;opPreviewMove(this.value)">' +
             '<div class="help-text">サイズはそのまま位置だけを変更します（前後どちらにも移動可）。選択中のグラフ本体をつまんでドラッグでも移動できます。確定には下の「位置を変更」を押してください。</div></div>' +
             '<div class="btn-group">' +
             '<button class="btn btn-primary" onclick="doMoveTo()" ' + (busy ? 'disabled' : '') + '>位置を変更（移動）を実行</button>' +
@@ -980,21 +1104,23 @@ function renderOp() {
                 ? '<div class="form-group" style="margin-top:12px"><label>新しいサイズ（MiB）<span style="color:#64748b">：現在 ' + curMiB + ' MiB' +
                   (adj ? '／直後の空き ' + fmtMiB(adj.size_bytes) + ' MiB' : '／直後に空きなし') +
                   (bef ? '／直前の空き ' + fmtMiB(bef.size_bytes) + ' MiB' : '') + '</span></label>' +
-                  '<input type="range" id="rs-size" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" value="' + curMiB + '" oninput="document.getElementById(\'rs-size-num\').value=this.value">' +
-                  '<input type="number" id="rs-size-num" value="' + curMiB + '" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" oninput="document.getElementById(\'rs-size\').value=this.value">' +
+                  '<input type="range" id="rs-size" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" value="' + curMiB + '" oninput="document.getElementById(\'rs-size-num\').value=this.value;opPreviewSize(this.value)">' +
+                  '<input type="number" id="rs-size-num" value="' + curMiB + '" min="' + minMiB + '" max="' + Math.max(maxMiB, minMiB + 1) + '" oninput="document.getElementById(\'rs-size\').value=this.value;opPreviewSize(this.value)">' +
                   '<div class="help-text">使用中 ' + (p.used || '不明') + ' のため ' + minMiB + ' MiB 以上が必要です。小さくすると縮小、大きくすると拡大します（拡大には直後の空きが必要）。' +
                   (btrfs ? 'btrfs はオンライン連動のためマウント解除は不要です。' : '') +
-                  '<br>選択中のグラフ右端にカーソルを合わせると↔に変わり、ドラッグでもサイズを調整できます（確定には下の「サイズ変更を実行」が必要です）。' +
+                  '<br>選択中のグラフ右端にカーソルを合わせると↔に変わり、ドラッグでもサイズを調整できます（確定には「サイズ変更を実行」を押してください）。バーを動かすとグラフも連動します。' +
                   '<br>縮小・拡大とも対象のみ変更し、後続パーティションの位置は変わりません（増減分は直後の空きに出入りします）。' +
                   (!canResize ? '<br><b style="color:#f87171">拡大・縮小できる余地がありません。</b>' : '') +
                   (canModifyTable && canMove ? '<br>直前の空き先頭（' + moveToMiB + ' MiB付近）へ移動できます。' : '') + '</div></div>' +
+                  '<div class="btn-group">' +
+                  '<button class="btn btn-primary" onclick="doResize()" ' + (busy || !canResize ? 'disabled' : '') + '>サイズ変更を実行</button>' +
+                  '</div>' +
                   frontBlock +
                   moveBlock +
-                  '<div class="btn-group">' +
-                  (canModifyTable ? '<button class="btn btn-secondary" onclick="doMoveForward()" ' + (busy || !canMove ? 'disabled' : '') + '>前方に移動</button>' : '') +
-                  '<button class="btn btn-primary" onclick="doResize()" ' + (busy || !canResize ? 'disabled' : '') + '>サイズ変更を実行</button>' +
-                  (canModifyTable ? '<button class="btn btn-danger" onclick="doDelete()" ' + (busy ? 'disabled' : '') + '>パーティションを削除</button>' : '') +
-                  '</div>' +
+                  (canModifyTable ? '<div class="btn-group">' +
+                  '<button class="btn btn-secondary" onclick="doMoveForward()" ' + (busy || !canMove ? 'disabled' : '') + '>前方に移動</button>' +
+                  '<button class="btn btn-danger" onclick="doDelete()" ' + (busy ? 'disabled' : '') + '>パーティションを削除</button>' +
+                  '</div>' : '') +
                   '<div class="note">※ xfs は拡大のみ対応（FS拡張は別途案内します）。btrfs は縮小・拡大ともオンライン連動（マウント解除不要）。vfat の拡縮小は fatresize 未導入のため未対応です。<br>' +
                   '※ 縮小はファイルシステム連動で行います（ext4 / NTFS / btrfs）。処理には時間がかかる場合があります。<br>' +
                   '※ 前方拡大はデータの前方コピー＋テーブル更新＋FS拡張で行います（終了位置・後続パーティションは不変）。完了まで画面を閉じずにお待ちください。<br>' +
