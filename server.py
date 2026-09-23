@@ -13,7 +13,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2034,6 +2034,24 @@ def _part_guard(path, for_create_disk=False, allow_system=False):
     return disk, ""
 
 
+def _system_critical_reason(part):
+    """システム上 critical なパーティションなら理由文、そうでなければ空文字を返す。
+    システムドライブ上の非システム領域（例: /dev/vda3 のような未マウントのデータ用）は
+    空文字となり、リサイズ・削除・移動・前方拡大の対象にできる"""
+    try:
+        if part in get_system_partitions():
+            return f"{part} はシステムパーティションのため操作できません"
+    except Exception:
+        pass
+    try:
+        for t in _part_mount_targets(part):
+            if is_system_mountpoint(t):
+                return f"{part} はシステム領域（{t}）にマウント中のため操作できません"
+    except Exception:
+        pass
+    return ""
+
+
 def _btrfs_mountpoint(part):
     """btrfs操作用のマウントポイントを返す。findmnt優先（/ を最優先）、無ければlsblk。無ければ空文字。
     btrfs filesystem resize はマウント中のパスが必須のため"""
@@ -2141,15 +2159,20 @@ def part_dellabel(disk):
 
 
 def part_delete(part):
-    """パーティション削除。マウント中・システムは拒否"""
+    """パーティション削除。マウント中・swap使用中・システム critical は拒否。
+    システムドライブ上の非システム領域（未マウント・非swap）は削除できる"""
     part = (part or "").strip()
     if not PART_DEV_RE.match(part):
         return {"ok": False, "error": f"不正なデバイス指定です: {part}"}
     if not os.path.exists(part):
         return {"ok": False, "error": f"デバイスが見つかりません: {part}"}
-    disk, err = _part_guard(part)
+    disk, err = _part_guard(part, allow_system=True)
     if err:
         return {"ok": False, "error": err}
+    if disk == get_system_disk():
+        crit = _system_critical_reason(part)
+        if crit:
+            return {"ok": False, "error": crit}
     if get_dev_mountpoint(part):
         return {"ok": False, "error": f"{part} はマウント中のため削除できません（先にアンマウントしてください）"}
     # swap 有効なパーティションは拒否
@@ -2467,11 +2490,16 @@ def part_resize(part, new_size_bytes):
             used_bytes = int(devs[0].get("fsused", 0) or 0)
     except Exception:
         pass
+    crit_reason = _system_critical_reason(part) if is_system else ""
     if is_system:
-        # システムドライブは btrfs の拡縮小のみ許可（オンライン拡縮小が可能なため）。
-        # 移動・削除・他FSは引き続き保護する
-        if fstype != "btrfs":
-            return {"ok": False, "error": f"{tmp_disk} はシステムドライブのため操作できません（btrfsの拡縮小のみ対応）"}
+        # システム critical（/・/boot・/boot/efi の実体やシステム系マウント先）は
+        # btrfs のオンライン拡縮小のみ許可。システムドライブ上の非システム領域は
+        # 未マウント（btrfs はマウント中も可）であれば通常と同様に拡縮小できる
+        if crit_reason:
+            if fstype != "btrfs":
+                return {"ok": False, "error": f"{crit_reason}（btrfsの拡縮小のみ対応）"}
+        elif get_dev_mountpoint(part) and fstype != "btrfs":
+            return {"ok": False, "error": f"{part} はマウント中のため変更できません（先にアンマウントしてください）"}
     elif get_dev_mountpoint(part) and fstype != "btrfs":
         return {"ok": False, "error": f"{part} はマウント中のため変更できません（先にアンマウントしてください）"}
     if new_size_bytes > cur_size:
@@ -2553,7 +2581,8 @@ def part_resize(part, new_size_bytes):
             own_mount = False
             tmpdir = ""
             if not mp:
-                if is_system:
+                # システム critical は常時マウントのはず。非システムの未マウントは一時マウントする
+                if crit_reason:
                     return {"ok": True,
                         "message": f"{part} のパーティションを拡大しました。FS拡張は別途 btrfs filesystem resize max が必要です（マウント後に実行）",
                         "need_fs_grow": True}
@@ -2629,8 +2658,8 @@ def part_resize(part, new_size_bytes):
             tmpdir = ""
             if not mp:
                 # 非システムの未マウント btrfs は一時マウントしてオンライン縮小する
-                # （btrfs のオフライン縮小は未対応のため）。システムは常時マウントのはず
-                if is_system:
+                # （btrfs のオフライン縮小は未対応のため）。システム critical は常時マウントのはず
+                if crit_reason:
                     return {"ok": False, "error": f"{part} のマウントポイントを特定できません（マウント中の btrfs が必要です）"}
                 try:
                     tmpdir = tempfile.mkdtemp(prefix="dm-btrfs-")
@@ -2769,7 +2798,8 @@ def part_expand_front(part, new_start_bytes):
     """開始位置を直前の空きにずらして拡大する（終了位置は不変）。
     データの前方コピー＋テーブル更新＋ファイルシステム拡張で行う。
     後続パーティションには触れない。縮小方向（開始位置を後ろへ）は
-    重なりコピーが危険なため非対応"""
+    重なりコピーが危険なため非対応。システム critical・マウント中・swap使用中は拒否するが、
+    システムドライブ上の非システム領域（未マウント）は対象にできる"""
     part = (part or "").strip()
     try:
         new_start_bytes = int(new_start_bytes or 0)
@@ -2779,9 +2809,13 @@ def part_expand_front(part, new_start_bytes):
         return {"ok": False, "error": f"不正なデバイス指定です: {part}"}
     if not os.path.exists(part):
         return {"ok": False, "error": f"デバイスが見つかりません: {part}"}
-    disk, err = _part_guard(part)
+    disk, err = _part_guard(part, allow_system=True)
     if err:
         return {"ok": False, "error": err}
+    if disk == get_system_disk():
+        crit = _system_critical_reason(part)
+        if crit:
+            return {"ok": False, "error": crit}
     if get_dev_mountpoint(part):
         return {"ok": False, "error": f"{part} はマウント中のため変更できません（先にアンマウントしてください）"}
     try:
@@ -2934,15 +2968,20 @@ def part_move_forward(part):
     データのブロックコピー＋パーティションテーブルの開始位置更新で行うため
     ファイルシステム種別を問わない。移動先＜移動元のため前方コピーで安全。
     先にデータを複写してからテーブルを書き換えるため、テーブル更新失敗時も
-    元位置のデータは残る"""
+    元位置のデータは残る。システム critical は拒否するが、システムドライブ上の
+    非システム領域（未マウント）は対象にできる"""
     part = (part or "").strip()
     if not PART_DEV_RE.match(part):
         return {"ok": False, "error": f"不正なデバイス指定です: {part}"}
     if not os.path.exists(part):
         return {"ok": False, "error": f"デバイスが見つかりません: {part}"}
-    disk, err = _part_guard(part)
+    disk, err = _part_guard(part, allow_system=True)
     if err:
         return {"ok": False, "error": err}
+    if disk == get_system_disk():
+        crit = _system_critical_reason(part)
+        if crit:
+            return {"ok": False, "error": crit}
     if get_dev_mountpoint(part):
         return {"ok": False, "error": f"{part} はマウント中のため移動できません（先にアンマウントしてください）"}
     try:
@@ -3044,7 +3083,8 @@ def part_move_to(part, new_start_bytes):
     末尾からの逆順チャンクコピーで行う。逆順＋チャンク≦移動幅により
     重なりコピーでも未読領域を壊さない。終了位置が変わるため
     後続パーティションに重ならないよう直後の空き内かを検証する。
-    ファイルシステム種別を問わない（サイズ不変のためFS作業なし）"""
+    ファイルシステム種別を問わない（サイズ不変のためFS作業なし）。
+    システム critical は拒否するが、システムドライブ上の非システム領域（未マウント）は対象にできる"""
     part = (part or "").strip()
     try:
         new_start_bytes = int(new_start_bytes or 0)
@@ -3054,9 +3094,13 @@ def part_move_to(part, new_start_bytes):
         return {"ok": False, "error": f"不正なデバイス指定です: {part}"}
     if not os.path.exists(part):
         return {"ok": False, "error": f"デバイスが見つかりません: {part}"}
-    disk, err = _part_guard(part)
+    disk, err = _part_guard(part, allow_system=True)
     if err:
         return {"ok": False, "error": err}
+    if disk == get_system_disk():
+        crit = _system_critical_reason(part)
+        if crit:
+            return {"ok": False, "error": crit}
     if get_dev_mountpoint(part):
         return {"ok": False, "error": f"{part} はマウント中のため移動できません（先にアンマウントしてください）"}
     try:

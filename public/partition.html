@@ -114,9 +114,9 @@ input[type=range]{width:100%;accent-color:#38bdf8}
     <div class="warn">
         <strong>警告：パーティション操作はデータを失う危険があります。</strong><br>
         拡大・縮小・作成・削除のいずれも、対象ディスク・パーティションをよく確認してから実行してください。<br>
-        マウント中のパーティションとシステムドライブ上の既存パーティションは保護のため操作できません（先にアンマウントしてください）。<br>
-        ただし <b>btrfs</b> はオンライン拡縮小に対応しているため、マウント中（システムドライブ含む）でも拡縮小が可能です。<br>
-        システムドライブ上の空き領域への新規作成は可能です。<br>
+        マウント中のパーティションとシステムパーティション（/・/boot・/boot/efi の実体やシステム系マウント先）は保護のため操作できません（先にアンマウントしてください）。<br>
+        ただし <b>btrfs</b> はオンライン拡縮小に対応しているため、マウント中（システムパーティション含む）でも拡縮小が可能です。<br>
+        システムドライブ上の空き領域への新規作成に加え、システムパーティション以外の未マウント領域（例: /dev/vda3）はリサイズ・削除・移動・前方拡大が可能です。<br>
         縮小は使用中容量以下にはできません。xfs の縮小と vfat の拡縮小（fatresize未導入時）は未対応です。
     </div>
     <div class="install-banner" id="install-banner">
@@ -300,7 +300,7 @@ function mountCell(d, p) {
 function renderDisk(d) {
     const div = document.createElement('div');
     div.className = 'dev';
-    const sysBadge = d.is_system ? '<span class="sys-badge">システム（作成・btrfs拡縮小のみ可）</span>' : '';
+    const sysBadge = d.is_system ? '<span class="sys-badge">システム（作成・btrfs拡縮小・非システム領域の操作可）</span>' : '';
     const mntNote = (!d.is_system && d.has_mount) ? '<div class="mount-warn">※ マウント中のパーティションは操作前にアンマウントしてください</div>' : '';
     // パーティションテーブルが無い未初期化ディスク（/dev/sdc等の空ドライブ）は
     // ディスク全体を選択して初期化→作成できるようにする
@@ -337,9 +337,10 @@ function renderDisk(d) {
             const selected = isSel ? ' selected' : '';
             const short = p.path.replace(d.path, '').replace('/dev/', '') || p.path;
             // 選択中のパーティションの右端にドラッグ用ハンドルを付ける
-            // （btrfs はマウント中・システムでも拡縮小できるため例外。非btrfsのマウント中・システムは付けない）
+            // （btrfs はマウント中・システムパーティションでも拡縮小できるため例外。
+            // システムドライブ上の非システム領域は未マウントなら通常と同様に可）
             let handle = '';
-            if (isSel && !busy && (isSysBtrfs(d, p) || (!d.is_system && (!p.mountpoint || isBtrfsPart(p))))) {
+            if (isSel && !busy && (isBtrfsPart(p) || (!p.system_part && !p.mountpoint))) {
                 const info = selectedResizeInfo(d, p);
                 if (info) {
                     handle = '<div class="resize-handle" title="右端をドラッグでサイズ変更（' +
@@ -466,8 +467,9 @@ function adjacentFreeBefore(d, part) {
 }
 
 // 移動（サイズ不変）の可動範囲。前後に動ける場合のみオブジェクト、不可なら null
+// （システムパーティション・マウント中は不可。システムドライブ上の非システム領域は未マウントなら可）
 function moveRangeInfo(d, part) {
-    if (!d || !part || d.is_system || part.mountpoint || busy) return null;
+    if (!d || !part || part.system_part || part.mountpoint || busy) return null;
     if (!(part.start_bytes > 0) || !((part.size_bytes || 0) >= 1048576)) return null;
     const curStartMiB = Math.floor(part.start_bytes / 1048576);
     let minStartMiB = curStartMiB, maxStartMiB = curStartMiB;
@@ -485,9 +487,9 @@ function moveRangeInfo(d, part) {
         nextFreeStart: aft ? aft.start_bytes : null, nextFreeBytes: aft ? aft.size_bytes : 0};
 }
 // 直前の空きへの前方拡大余地。前方拡大できる場合のみオブジェクト、不可なら null
-// （後方拡大と同方針：swap等の未対応FS、マウント中、空きなしは不可）
+// （後方拡大と同方針：swap等の未対応FS、システムパーティション、マウント中、空きなしは不可）
 function frontExpandInfo(d, part) {
-    if (!d || !part || d.is_system || part.mountpoint || busy) return null;
+    if (!d || !part || part.system_part || part.mountpoint || busy) return null;
     const fstype = (part.fstype || '').toLowerCase();
     if (['', 'ext4', 'ntfs', 'xfs', 'btrfs', 'exfat', 'vfat'].indexOf(fstype) < 0) return null;
     const bef = adjacentFreeBefore(d, part);
@@ -522,11 +524,12 @@ function expandLimits(d, part) {
     return {maxMiB: maxMiB, adj: adj};
 }
 // 選択中パーティションのドラッグ用リサイズ範囲。拡縮小余地がなければ null
-// （btrfs はマウント中・システムでもオンライン拡縮小できるため例外許可）
+// （btrfs はマウント中・システムパーティションでもオンライン拡縮小できるため例外許可。
+// システムドライブ上の非システム領域は未マウントなら通常と同様に可）
 function selectedResizeInfo(d, part) {
     if (!d || !part || busy) return null;
     const btrfs = isBtrfsPart(part);
-    if (d.is_system && !btrfs) return null;
+    if (part.system_part && !btrfs) return null;
     if (part.mountpoint && !btrfs) return null;
     const curMiB = fmtMiB(part.size_bytes || 0);
     const minMiB = shrinkMinMiB(part);
@@ -1015,20 +1018,22 @@ function renderOp() {
         return;
     }
     if (sel.isSystem) {
-        // システムドライブは btrfs 拡縮小と空き領域への作成のみ例外許可。それ以外は保護
+        // システムドライブは btrfs 拡縮小・空き領域への作成に加え、
+        // システムパーティション以外の未マウント領域も操作可。それ以外は保護
         const d0 = devices.find(x => x.path === sel.disk);
         const p0 = (sel.kind === 'part') ? sel.part : null;
-        if (!((sel.kind === 'part' && d0 && isSysBtrfs(d0, p0)) || sel.kind === 'free')) {
+        const nonSysReady = !!(p0 && !p0.system_part && !p0.mountpoint);
+        if (!((sel.kind === 'part' && d0 && isSysBtrfs(d0, p0)) || sel.kind === 'free' || nonSysReady)) {
             // 例外：システム外パーティションのアンマウントのみ許可（例: /dev/vda3）
             if (p0 && p0.mountpoint && !p0.system_part) {
                 body.innerHTML =
                     '<div class="op-info"><b>' + esc(p0.path) + '</b>（' + esc(p0.size) + ' / ' + esc(p0.fstype || 'FS不明') + '）<br>' +
                     'マウント中: <b class="mount-warn">' + esc(p0.mountpoint) + '</b><br>' +
-                    'システムドライブ上のパーティションですが、システム領域ではないためアンマウントできます。</div>' +
+                    'システムドライブ上のパーティションですが、システム領域ではないためアンマウントできます。アンマウント後はリサイズ・削除・移動が可能です。</div>' +
                     '<div class="btn-group"><button class="btn btn-secondary" onclick="doUnmount()" ' + (busy ? 'disabled' : '') + '>アンマウント</button></div>';
                 return;
             }
-            body.innerHTML = '<div class="op-info"><b>' + esc(sel.disk) + '</b> はシステムドライブのため操作できません（空き領域への作成・btrfsの拡縮小のみ対応）。</div>';
+            body.innerHTML = '<div class="op-info"><b>' + esc(sel.disk) + '</b> はシステムドライブのため操作できません（空き領域への作成・btrfsの拡縮小・非システム領域の操作のみ対応）。</div>';
             return;
         }
     }
@@ -1089,13 +1094,14 @@ function renderOp() {
             '<div class="btn-group">' +
             '<button class="btn btn-primary" onclick="doMoveTo()" ' + (busy ? 'disabled' : '') + '>位置を変更（移動）を実行</button>' +
             '</div>' : '';
-        // 移動・削除はマウント中とシステムでは不可（バックエンドも拒否する）
-        const canModifyTable = !p.mountpoint && d && !d.is_system;
+        // 移動・削除はマウント中とシステムパーティションでは不可（バックエンドも拒否する）。
+        // システムドライブ上の非システム領域は未マウントなら可
+        const canModifyTable = !p.mountpoint && d && !p.system_part;
         body.innerHTML =
             '<div class="op-info"><b>' + esc(p.path) + '</b>（' + esc(p.size) + ' / ' + esc(p.fstype || 'FS不明') + '）<br>' +
             '使用中: ' + esc(p.used || '不明') + (p.mountpoint ? ' ｜ マウント中: <b class="mount-warn">' + esc(p.mountpoint) + '</b>' : ' ｜ 未マウント') +
             (p.label ? ' ｜ ラベル: ' + esc(p.label) : '') +
-            (sysBtrfs ? '<br><b style="color:#eab308">システムドライブのため拡縮小のみ可能です（オンライン操作・マウント解除不要）。</b>'
+            ((sysBtrfs && p.system_part) ? '<br><b style="color:#eab308">システムパーティションのため拡縮小のみ可能です（オンライン操作・マウント解除不要）。</b>'
              : (btrfs && p.mountpoint ? '<br><b style="color:#eab308">マウント中の btrfs はオンラインで拡縮小できます（アンマウント不要）。</b>' : '')) + '</div>' +
             ((p.mountpoint && !p.system_part)
                 ? '<div class="btn-group"><button class="btn btn-secondary" onclick="doUnmount()" ' + (busy ? 'disabled' : '') + '>アンマウント</button></div>'
