@@ -14,7 +14,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2445,8 +2445,14 @@ def get_general_users():
     return {"users": ordered, "default": default}
 
 
-def _part_fix_ext4_perms(new_part, chown_user="", chmod777=False):
-    """作成直後のext4を一時マウントして所有者変更・chmod 777 を行う。
+# 作成時に所有者・権限調整を行うPOSIX系ファイルシステム。
+# ext4・btrfs・xfs はいずれも mkfs直後 root所有 (755) のため一般ユーザーが書き込めない。
+# ntfs/vfat/exfat は所有権概念がなくマウントオプション側の話のため対象外
+PART_PERM_FS = ("ext4", "btrfs", "xfs")
+
+
+def _part_fix_fs_perms(new_part, chown_user="", chmod777=False):
+    """作成直後のPOSIX系FSを一時マウントして所有者変更・chmod 777 を行う。
     mkfs直後は root所有 (755) のため一般ユーザーが書き込めない。
     chown_user 指定時はそのユーザーに所有者を変更し、
     chmod777 が真の場合は chmod 777 で全員に開放する（両方ONなら両方適用）。
@@ -2626,12 +2632,12 @@ def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type
         return {"ok": False, "error": f"{new_part} のフォーマットに失敗しました: {out[:300]}",
             "part": new_part}
     _part_refresh(disk)
-    # ext4 は mkfs直後 root所有 (755) のため一般ユーザーが書き込めない。
+    # POSIX系FS (ext4/btrfs/xfs) は mkfs直後 root所有 (755) のため一般ユーザーが書き込めない。
     # 所有者の一般ユーザー化（既定ON相当・UI側で選択）と
     # chmod 777 開放（既定OFF）を単一マウントで適用する
     chown_user = (chown_user or "").strip()
-    if fstype == "ext4" and (chown_user or chmod777):
-        ok777, note777, warn777 = _part_fix_ext4_perms(new_part, chown_user, chmod777)
+    if fstype in PART_PERM_FS and (chown_user or chmod777):
+        ok777, note777, warn777 = _part_fix_fs_perms(new_part, chown_user, chmod777)
         _part_refresh(disk)
         if ok777:
             suffix = f"（{note777}）" if note777 else ""
@@ -4522,8 +4528,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 size_bytes = 0
         start_bytes = data.get("start_bytes")
-        # ext4の権限オプション（chmodは既定OFF、所有者変更はUI側既定ON。
-        # ext4以外では無視される）
+        # POSIX系FS (ext4/btrfs/xfs) の権限オプション（chmodは既定OFF、所有者変更はUI側既定ON。
+        # 対象外FSでは無視される）
         chmod777 = data.get("chmod777", data.get("chmod_777", False))
         if isinstance(chmod777, str):
             chmod777 = chmod777.strip().lower() not in ("0", "false", "no", "off", "")

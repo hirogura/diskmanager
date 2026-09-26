@@ -204,7 +204,7 @@ async function loadAll() {
     await loadDevices();
 }
 
-// ext4作成時の所有者候補（一般ユーザー一覧）を取得する
+// 作成時の所有者候補（ext4・btrfs・xfs用。一般ユーザー一覧）を取得する
 async function loadOwners() {
     try {
         const st = await (await fetch('/api/part/owners')).json();
@@ -1068,7 +1068,7 @@ function renderOp() {
             '<div class="form-group"><label>パーティションテーブル</label>' +
             '<select id="mk-table"><option value="gpt">GPT（推奨・2TB超対応）</option><option value="msdos">MBR（旧式・2TB以下）</option></select></div>' +
             '<div class="form-group"><label>ファイルシステム</label>' +
-            '<select id="mk-fstype" onchange="mkChmodToggle()"><option value="ext4">ext4（Linux標準）</option><option value="btrfs">btrfs</option>' +
+            '<select id="mk-fstype" onchange="mkPermToggle()"><option value="ext4">ext4（Linux標準）</option><option value="btrfs">btrfs</option>' +
             '<option value="xfs">xfs</option><option value="ntfs">ntfs（Windows共用）</option>' +
             '<option value="vfat">vfat(FAT32・共用)</option><option value="exfat">exfat（共用・大容量）</option></select></div>' +
             '<div class="form-group"><label>サイズ（MiB）<span style="color:#64748b">：最大 ' + maxMiB + ' MiB</span></label>' +
@@ -1076,9 +1076,9 @@ function renderOp() {
             '<input type="number" id="mk-size-num" value="' + maxMiB + '" min="16" max="' + maxMiB + '" oninput="document.getElementById(\'mk-size\').value=this.value"></div>' +
             '<div class="form-group"><label>ラベル（任意）</label><input type="text" id="mk-label" placeholder="例: data" maxlength="32">' +
             '<div class="help-text">vfat は11文字まで（自動で大文字化）。空欄可。</div></div>' +
-            '<div class="form-group" id="mk-chown-row"><label class="radio"><input type="checkbox" id="mk-chown" checked onchange="document.getElementById(\'mk-owner\').disabled=!this.checked"><span>所有者を一般ユーザーにする<small>ext4は作成直後 root所有のため一般ユーザーが書き込めません。選択したユーザーを所有者にします（既定ON・ext4以外は無視）。</small></span></label>' +
+            '<div class="form-group" id="mk-chown-row"><label class="radio"><input type="checkbox" id="mk-chown" checked onchange="document.getElementById(\'mk-owner\').disabled=!this.checked"><span>所有者を一般ユーザーにする<small>ext4・btrfs・xfsは作成直後 root所有のため一般ユーザーが書き込めません。選択したユーザーを所有者にします（既定ON・対象外FSでは無視）。</small></span></label>' +
             '<select id="mk-owner" style="margin-top:6px">' + mkOwnerOptions() + '</select></div>' +
-            '<div class="form-group" id="mk-chmod-row"><label class="radio"><input type="checkbox" id="mk-chmod777"><span>chmod 777 で全員に開放する<small>どのPC・どのユーザーからでも書き込めるようにします（既定OFF・ext4以外は無視）。セキュリティを重視する場合はOFFのまま所有者の変更のみ推奨。</small></span></label></div>' +
+            '<div class="form-group" id="mk-chmod-row"><label class="radio"><input type="checkbox" id="mk-chmod777"><span>chmod 777 で全員に開放する<small>どのPC・どのユーザーからでも書き込めるようにします（既定OFF・対象外FSでは無視）。セキュリティを重視する場合はOFFのまま所有者の変更のみ推奨。</small></span></label></div>' +
             '<div class="btn-group"><button class="btn btn-primary" onclick="doCreateUninit()" ' + (busy ? 'disabled' : '') + '>初期化してパーティションを作成</button></div>' +
             '<div class="note">※ ディスク先頭の管理領域にテーブルを書き込むため、既存データがある場合は失われます。</div>';
         return;
@@ -1170,7 +1170,7 @@ function renderOp() {
         body.innerHTML =
             '<div class="op-info"><b>' + esc(sel.disk) + '</b> 上の空き領域（' + esc(f.size) + '）に新規パーティションを作成します。</div>' +
             '<div class="form-group"><label>ファイルシステム</label>' +
-            '<select id="mk-fstype" onchange="mkChmodToggle()"><option value="ext4">ext4（Linux標準）</option><option value="btrfs">btrfs</option>' +
+            '<select id="mk-fstype" onchange="mkPermToggle()"><option value="ext4">ext4（Linux標準）</option><option value="btrfs">btrfs</option>' +
             '<option value="xfs">xfs</option><option value="ntfs">ntfs（Windows共用）</option>' +
             '<option value="vfat">vfat(FAT32・共用)</option><option value="exfat">exfat（共用・大容量）</option></select></div>' +
             '<div class="form-group"><label>サイズ（MiB）<span style="color:#64748b">：最大 ' + freeMaxMiB + ' MiB</span></label>' +
@@ -1179,9 +1179,9 @@ function renderOp() {
             (!canCreate ? '<div class="help-text"><b style="color:#f87171">空きが小さすぎて16MiBを作成できません。</b></div>' : '') + '</div>' +
             '<div class="form-group"><label>ラベル（任意）</label><input type="text" id="mk-label" placeholder="例: data" maxlength="32">' +
             '<div class="help-text">vfat は11文字まで（自動で大文字化）。空欄可。</div></div>' +
-            '<div class="form-group" id="mk-chown-row"><label class="radio"><input type="checkbox" id="mk-chown" checked onchange="document.getElementById(\'mk-owner\').disabled=!this.checked"><span>所有者を一般ユーザーにする<small>ext4は作成直後 root所有のため一般ユーザーが書き込めません。選択したユーザーを所有者にします（既定ON・ext4以外は無視）。</small></span></label>' +
+            '<div class="form-group" id="mk-chown-row"><label class="radio"><input type="checkbox" id="mk-chown" checked onchange="document.getElementById(\'mk-owner\').disabled=!this.checked"><span>所有者を一般ユーザーにする<small>ext4・btrfs・xfsは作成直後 root所有のため一般ユーザーが書き込めません。選択したユーザーを所有者にします（既定ON・対象外FSでは無視）。</small></span></label>' +
             '<select id="mk-owner" style="margin-top:6px">' + mkOwnerOptions() + '</select></div>' +
-            '<div class="form-group" id="mk-chmod-row"><label class="radio"><input type="checkbox" id="mk-chmod777"><span>chmod 777 で全員に開放する<small>どのPC・どのユーザーからでも書き込めるようにします（既定OFF・ext4以外は無視）。セキュリティを重視する場合はOFFのまま所有者の変更のみ推奨。</small></span></label></div>' +
+            '<div class="form-group" id="mk-chmod-row"><label class="radio"><input type="checkbox" id="mk-chmod777"><span>chmod 777 で全員に開放する<small>どのPC・どのユーザーからでも書き込めるようにします（既定OFF・対象外FSでは無視）。セキュリティを重視する場合はOFFのまま所有者の変更のみ推奨。</small></span></label></div>' +
             '<div class="btn-group"><button class="btn btn-primary" onclick="doCreate()" ' + ((busy || !canCreate) ? 'disabled' : '') + '>パーティションを作成</button>' +
             (isTableOnly ? '<button class="btn btn-danger" onclick="doDeleteTable()" ' + (busy ? 'disabled' : '') + '>パーティションテーブルを削除</button>' : '') + '</div>' +
             (isTableOnly ? '<div class="note">※ パーティションが無いため、不要であればパーティションテーブル自体を削除して未初期化に戻せます。</div>' : '');
@@ -1312,13 +1312,13 @@ async function doDeleteAll() {
     } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
 }
 
-function mkChmodToggle() {
+function mkPermToggle() {
     const fs = document.getElementById('mk-fstype');
-    const isExt4 = fs && fs.value === 'ext4';
+    const show = fs && ['ext4', 'btrfs', 'xfs'].indexOf(fs.value) >= 0;
     const chmodRow = document.getElementById('mk-chmod-row');
     const chownRow = document.getElementById('mk-chown-row');
-    if (chmodRow) chmodRow.style.display = isExt4 ? '' : 'none';
-    if (chownRow) chownRow.style.display = isExt4 ? '' : 'none';
+    if (chmodRow) chmodRow.style.display = show ? '' : 'none';
+    if (chownRow) chownRow.style.display = show ? '' : 'none';
 }
 
 // 作成時の権限オプションを読み取る（chown既定ON・chmod既定OFF）
