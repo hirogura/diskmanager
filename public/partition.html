@@ -1149,6 +1149,7 @@ function renderOp() {
                   (canModifyTable ? '<div class="btn-group">' +
                   '<button class="btn btn-secondary" onclick="doMoveForward()" ' + (busy || !canMove ? 'disabled' : '') + '>前方に移動</button>' +
                   '<button class="btn btn-danger" onclick="doDelete()" ' + (busy ? 'disabled' : '') + '>パーティションを削除</button>' +
+                  ((d && !d.is_system) ? '<button class="btn btn-danger" onclick="doDeleteAll()" ' + (busy ? 'disabled' : '') + '>ドライブ内の全パーティションを削除</button>' : '') +
                   '</div>' : '') +
                   '<div class="note">※ xfs は拡大のみ対応（FS拡張は別途案内します）。btrfs は縮小・拡大ともオンライン連動（マウント解除不要）。vfat の拡縮小は fatresize 未導入のため未対応です。<br>' +
                   '※ 縮小はファイルシステム連動で行います（ext4 / NTFS / btrfs）。処理には時間がかかる場合があります。<br>' +
@@ -1282,6 +1283,26 @@ async function doDelete() {
         setBusy(true);
         const res = await fetch('/api/part/delete', {method:'POST', headers:{'Content-Type':'application/json'},
             body: JSON.stringify({part: sel.path})});
+        const data = await res.json();
+        setBusy(false);
+        if (!data.ok) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
+        notify(data.message, 'success');
+        sel = null;
+        await loadDevices();
+    } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
+}
+
+async function doDeleteAll() {
+    if (!sel || sel.kind !== 'part') return;
+    const d = devices.find(x => x.path === sel.disk);
+    const names = d ? (d.partitions || []).map(p => p.path).join(', ') : '';
+    const count = d ? (d.partitions || []).length : 0;
+    if (!confirm(sel.disk + ' 内の全パーティション（' + count + '件: ' + names + '）を削除します。\nこの操作は取り消せません。\n\n本当に実行しますか？')) return;
+    if (!confirm('最終確認です。\n' + sel.disk + ' の全データが失われます。実行してよろしいですか？')) return;
+    try {
+        setBusy(true);
+        const res = await fetch('/api/part/delete_all', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({disk: sel.disk})});
         const data = await res.json();
         setBusy(false);
         if (!data.ok) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }

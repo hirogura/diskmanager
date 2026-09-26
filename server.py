@@ -14,7 +14,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2195,6 +2195,89 @@ def part_delete(part):
     return {"ok": True, "message": f"{part} を削除しました"}
 
 
+def part_delete_all(disk):
+    """ドライブ内の全パーティションを削除する。
+    安全のため、以下に1つでも当てはまれば何も削除せず全体を拒否する
+    （中途半端な部分削除を避けるため）：
+    ・システムドライブ ・マウント中のパーティションあり
+    ・swap使用中のパーティションあり ・システムcriticalなパーティションあり。
+    削除は番号の降順に行う（msdos論理区画の番号詰め対策）"""
+    disk = (disk or "").strip()
+    if not WIPE_PATH_RE.match(disk):
+        return {"ok": False, "error": f"不正なデバイス指定です: {disk}"}
+    d, err = _part_guard(disk, for_create_disk=True)
+    if err:
+        return {"ok": False, "error": err}
+    if disk == get_system_disk():
+        return {"ok": False, "error": f"{disk} はシステムドライブのため全削除できません（個別に削除してください）"}
+    if not shutil.which("parted"):
+        return {"ok": False, "error": "parted が利用できません（先にツールをインストールしてください）"}
+    # パーティション列挙（種別partのみ）
+    parts = []
+    try:
+        r = subprocess.run(["lsblk", "-J", "-o", "NAME,TYPE,MOUNTPOINT", disk],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return {"ok": False, "error": f"{disk} の情報を取得できません"}
+        data = json.loads(r.stdout or "{}")
+        devs = data.get("blockdevices", [])
+        if devs:
+            for ch in devs[0].get("children") or []:
+                if (ch.get("type") or "") != "part":
+                    continue
+                cpath = f"/dev/{ch.get('name', '')}"
+                if PART_DEV_RE.match(cpath):
+                    parts.append(cpath)
+    except Exception as e:
+        return {"ok": False, "error": f"{disk} の情報を取得できません: {e}"}
+    if not parts:
+        return {"ok": False, "error": f"{disk} にパーティションがありません"}
+    # 事前検査（全件通過しなければ1つも削除しない）
+    try:
+        r = subprocess.run(["swapon", "--show=NAME", "--noheadings"],
+            capture_output=True, text=True, timeout=10)
+        swap_out = r.stdout or ""
+    except Exception:
+        swap_out = ""
+    problems = []
+    for p in parts:
+        crit = _system_critical_reason(p)
+        if crit:
+            problems.append(crit)
+            continue
+        if get_dev_mountpoint(p):
+            problems.append(f"{p} はマウント中のため削除できません（先にアンマウントしてください）")
+            continue
+        if p in swap_out:
+            problems.append(f"{p} は swap として使用中のため削除できません（swapoff 後に再試行）")
+            continue
+    if problems:
+        return {"ok": False, "error": "全削除を中止しました（何も削除していません）: " + " / ".join(problems)[:400]}
+    # 番号を全件解決してから降順に削除する
+    numbered = []
+    for p in parts:
+        num = _part_number(disk, p)
+        if not num:
+            return {"ok": False, "error": f"{p} のパーティション番号を特定できません（何も削除していません）"}
+        numbered.append((num, p))
+    numbered.sort(reverse=True)
+    deleted = []
+    for num, p in numbered:
+        rc, out = _run_cmd(["parted", "-s", disk, "rm", str(num)], timeout=120)
+        if rc != 0:
+            _part_refresh(disk)
+            done = f"{len(deleted)}件削除済み（{', '.join(deleted)}）。" if deleted else ""
+            return {"ok": False,
+                "error": f"{p} の削除に失敗しました: {out[:200]}（{done}残りは手動で確認してください）",
+                "deleted": deleted}
+        _run_cmd(["wipefs", "-a", p], timeout=30)
+        deleted.append(p)
+    _part_refresh(disk)
+    return {"ok": True,
+        "message": f"{disk} の全パーティション（{len(deleted)}件）を削除しました",
+        "deleted": deleted}
+
+
 def _blk_uuid(part):
     """blkid で UUID を取得する（取得失敗時は空文字）"""
     try:
@@ -3827,6 +3910,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p.path == "/api/part/unmount": self._handle_part_unmount(data)
         elif p.path == "/api/part/mount": self._handle_part_mount(data)
         elif p.path == "/api/part/delete": self._handle_part_delete(data)
+        elif p.path == "/api/part/delete_all": self._handle_part_delete_all(data)
         elif p.path == "/api/part/create": self._handle_part_create(data)
         elif p.path == "/api/part/mklabel": self._handle_part_mklabel(data)
         elif p.path == "/api/part/dellabel": self._handle_part_dellabel(data)
@@ -4406,6 +4490,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not part:
             self._json({"error": "パーティションを指定してください"}); return
         res = part_delete(part)
+        self._json(res, 200 if res.get("ok") else 400)
+
+    def _handle_part_delete_all(self, data):
+        err = self._part_busy_guard()
+        if err:
+            self._json({"error": err}); return
+        disk = (data.get("disk") or "").strip()
+        if not disk:
+            self._json({"error": "対象ディスクを指定してください"}); return
+        res = part_delete_all(disk)
         self._json(res, 200 if res.get("ok") else 400)
 
     def _handle_part_create(self, data):
