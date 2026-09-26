@@ -13,7 +13,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2313,7 +2313,37 @@ PART_MKFS = {
 }
 
 
-def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type=""):
+def _part_chmod_open(new_part):
+    """作成直後のext4を一時マウントして chmod 777 する。
+    mkfs直後は root所有 (755) のため一般ユーザーが書き込めず、
+    別PCに繋いでも書き込めない。これを全員に開放する。
+    戻り値は (ok, note)。失敗時は ok=False と理由を返す"""
+    tmpdir = ""
+    try:
+        tmpdir = tempfile.mkdtemp(prefix="dm-chmod-")
+    except Exception as e:
+        return False, f"一時ディレクトリを作成できません: {e}"
+    try:
+        rc, out = _run_cmd(["mount", new_part, tmpdir], timeout=60)
+        if rc != 0:
+            return False, f"一時マウントに失敗しました: {out[:200]}"
+        try:
+            os.chmod(tmpdir, 0o777)
+        except Exception as e:
+            return False, f"chmod 777 に失敗しました: {e}"
+        return True, "chmod 777済み"
+    finally:
+        try:
+            _run_cmd(["umount", tmpdir], timeout=60)
+        except Exception:
+            pass
+        try:
+            os.rmdir(tmpdir)
+        except Exception:
+            pass
+
+
+def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type="", chmod777=True):
     """空き領域にパーティションを作成し、ファイルシステムを初期化する
     未初期化ディスクでは table_type（gpt/msdos、既定gpt）で先に初期化してから作成する
     システムドライブ上の空き領域への作成も許可する（既存パーティションには触れないため安全。
@@ -2436,6 +2466,18 @@ def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type
         return {"ok": False, "error": f"{new_part} のフォーマットに失敗しました: {out[:300]}",
             "part": new_part}
     _part_refresh(disk)
+    # ext4 は mkfs直後 root所有 (755) のため一般ユーザーが書き込めない。
+    # デフォルト有効のオプションで chmod 777 し、全員に開放する
+    if fstype == "ext4" and chmod777:
+        ok777, note777 = _part_chmod_open(new_part)
+        _part_refresh(disk)
+        if ok777:
+            return {"ok": True,
+                "message": f"{new_part} ({fstype}) を作成しました（全員に開放: {note777}）",
+                "part": new_part, "chmod777": True}
+        return {"ok": True,
+            "message": f"{new_part} ({fstype}) を作成しました（開放処理に失敗: {note777}。手動で mount 後に chmod 777 してください）",
+            "part": new_part, "chmod777": False, "chmod_warning": note777}
     return {"ok": True, "message": f"{new_part} ({fstype}) を作成しました", "part": new_part}
 
 
@@ -4301,7 +4343,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 size_bytes = 0
         start_bytes = data.get("start_bytes")
-        res = part_create(disk, fstype, size_bytes, label, start_bytes, table_type)
+        # ext4のchmod 777開放オプション（既定True。ext4以外では無視される）
+        chmod777 = data.get("chmod777", data.get("chmod_777", True))
+        if isinstance(chmod777, str):
+            chmod777 = chmod777.strip().lower() not in ("0", "false", "no", "off", "")
+        chmod777 = bool(chmod777)
+        res = part_create(disk, fstype, size_bytes, label, start_bytes, table_type, chmod777)
         self._json(res, 200 if res.get("ok") else 400)
 
     def _handle_part_mklabel(self, data):

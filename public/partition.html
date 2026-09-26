@@ -1048,7 +1048,7 @@ function renderOp() {
             '<div class="form-group"><label>パーティションテーブル</label>' +
             '<select id="mk-table"><option value="gpt">GPT（推奨・2TB超対応）</option><option value="msdos">MBR（旧式・2TB以下）</option></select></div>' +
             '<div class="form-group"><label>ファイルシステム</label>' +
-            '<select id="mk-fstype"><option value="ext4">ext4（Linux標準）</option><option value="btrfs">btrfs</option>' +
+            '<select id="mk-fstype" onchange="mkChmodToggle()"><option value="ext4">ext4（Linux標準）</option><option value="btrfs">btrfs</option>' +
             '<option value="xfs">xfs</option><option value="ntfs">ntfs（Windows共用）</option>' +
             '<option value="vfat">vfat(FAT32・共用)</option><option value="exfat">exfat（共用・大容量）</option></select></div>' +
             '<div class="form-group"><label>サイズ（MiB）<span style="color:#64748b">：最大 ' + maxMiB + ' MiB</span></label>' +
@@ -1056,6 +1056,7 @@ function renderOp() {
             '<input type="number" id="mk-size-num" value="' + maxMiB + '" min="16" max="' + maxMiB + '" oninput="document.getElementById(\'mk-size\').value=this.value"></div>' +
             '<div class="form-group"><label>ラベル（任意）</label><input type="text" id="mk-label" placeholder="例: data" maxlength="32">' +
             '<div class="help-text">vfat は11文字まで（自動で大文字化）。空欄可。</div></div>' +
+            '<div class="form-group" id="mk-chmod-row"><label class="radio"><input type="checkbox" id="mk-chmod777" checked><span>chmod 777 で全員に開放する<small>ext4は作成直後 root所有のため一般ユーザーが書き込めません。別PCでも使えるよう開放します（既定ON・ext4以外は無視）。</small></span></label></div>' +
             '<div class="btn-group"><button class="btn btn-primary" onclick="doCreateUninit()" ' + (busy ? 'disabled' : '') + '>初期化してパーティションを作成</button></div>' +
             '<div class="note">※ ディスク先頭の管理領域にテーブルを書き込むため、既存データがある場合は失われます。</div>';
         return;
@@ -1146,7 +1147,7 @@ function renderOp() {
         body.innerHTML =
             '<div class="op-info"><b>' + esc(sel.disk) + '</b> 上の空き領域（' + esc(f.size) + '）に新規パーティションを作成します。</div>' +
             '<div class="form-group"><label>ファイルシステム</label>' +
-            '<select id="mk-fstype"><option value="ext4">ext4（Linux標準）</option><option value="btrfs">btrfs</option>' +
+            '<select id="mk-fstype" onchange="mkChmodToggle()"><option value="ext4">ext4（Linux標準）</option><option value="btrfs">btrfs</option>' +
             '<option value="xfs">xfs</option><option value="ntfs">ntfs（Windows共用）</option>' +
             '<option value="vfat">vfat(FAT32・共用)</option><option value="exfat">exfat（共用・大容量）</option></select></div>' +
             '<div class="form-group"><label>サイズ（MiB）<span style="color:#64748b">：最大 ' + freeMaxMiB + ' MiB</span></label>' +
@@ -1155,6 +1156,7 @@ function renderOp() {
             (!canCreate ? '<div class="help-text"><b style="color:#f87171">空きが小さすぎて16MiBを作成できません。</b></div>' : '') + '</div>' +
             '<div class="form-group"><label>ラベル（任意）</label><input type="text" id="mk-label" placeholder="例: data" maxlength="32">' +
             '<div class="help-text">vfat は11文字まで（自動で大文字化）。空欄可。</div></div>' +
+            '<div class="form-group" id="mk-chmod-row"><label class="radio"><input type="checkbox" id="mk-chmod777" checked><span>chmod 777 で全員に開放する<small>ext4は作成直後 root所有のため一般ユーザーが書き込めません。別PCでも使えるよう開放します（既定ON・ext4以外は無視）。</small></span></label></div>' +
             '<div class="btn-group"><button class="btn btn-primary" onclick="doCreate()" ' + ((busy || !canCreate) ? 'disabled' : '') + '>パーティションを作成</button>' +
             (isTableOnly ? '<button class="btn btn-danger" onclick="doDeleteTable()" ' + (busy ? 'disabled' : '') + '>パーティションテーブルを削除</button>' : '') + '</div>' +
             (isTableOnly ? '<div class="note">※ パーティションが無いため、不要であればパーティションテーブル自体を削除して未初期化に戻せます。</div>' : '');
@@ -1265,18 +1267,26 @@ async function doDelete() {
     } catch(e) { setBusy(false); notify('通信エラー: ' + e.message, 'error'); }
 }
 
+function mkChmodToggle() {
+    const fs = document.getElementById('mk-fstype');
+    const row = document.getElementById('mk-chmod-row');
+    if (fs && row) row.style.display = (fs.value === 'ext4') ? '' : 'none';
+}
+
 async function doCreate() {
     if (!sel || sel.kind !== 'free') return;
     const fstype = document.getElementById('mk-fstype').value;
     const sizeMiB = parseFloat(document.getElementById('mk-size-num').value);
     const label = document.getElementById('mk-label').value.trim();
+    const chmodEl = document.getElementById('mk-chmod777');
+    const chmod777 = chmodEl ? chmodEl.checked : true;
     if (!sizeMiB || sizeMiB < 16) { notify('サイズは16MiB以上を指定してください', 'error'); return; }
     if (sizeMiB * 1048576 > sel.free.size_bytes) { notify('空き領域を超えています', 'error'); return; }
     if (!confirm(sel.disk + ' の空き領域に ' + sizeMiB + ' MiB（' + fstype + '）を作成します。\nよろしいですか？')) return;
     try {
         setBusy(true);
         const res = await fetch('/api/part/create', {method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({disk: sel.disk, fstype: fstype, size_mib: sizeMiB, label: label, start_bytes: sel.free.start_bytes})});
+            body: JSON.stringify({disk: sel.disk, fstype: fstype, size_mib: sizeMiB, label: label, start_bytes: sel.free.start_bytes, chmod777: chmod777})});
         const data = await res.json();
         setBusy(false);
         if (!data.ok) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
@@ -1312,6 +1322,8 @@ async function doCreateUninit() {
     const fstype = document.getElementById('mk-fstype').value;
     const sizeMiB = parseFloat(document.getElementById('mk-size-num').value);
     const label = document.getElementById('mk-label').value.trim();
+    const chmodEl = document.getElementById('mk-chmod777');
+    const chmod777 = chmodEl ? chmodEl.checked : true;
     if (!sizeMiB || sizeMiB < 16) { notify('サイズは16MiB以上を指定してください', 'error'); return; }
     const tableName = table === 'gpt' ? 'GPT' : 'MBR';
     if (!confirm(sel.disk + ' を ' + tableName + ' で初期化し、' + sizeMiB + ' MiB（' + fstype + '）を作成します。\n' +
@@ -1320,7 +1332,7 @@ async function doCreateUninit() {
     try {
         setBusy(true);
         const res = await fetch('/api/part/create', {method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({disk: sel.disk, fstype: fstype, size_mib: sizeMiB, label: label, table: table})});
+            body: JSON.stringify({disk: sel.disk, fstype: fstype, size_mib: sizeMiB, label: label, table: table, chmod777: chmod777})});
         const data = await res.json();
         setBusy(false);
         if (!data.ok) { notify('エラー: ' + (data.error || '失敗'), 'error'); return; }
