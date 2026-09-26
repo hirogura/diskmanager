@@ -2,6 +2,7 @@
 import http.server
 import json
 import os
+import pwd
 import shlex
 import shutil
 import subprocess
@@ -13,7 +14,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2313,25 +2314,101 @@ PART_MKFS = {
 }
 
 
-def _part_chmod_open(new_part):
-    """作成直後のext4を一時マウントして chmod 777 する。
-    mkfs直後は root所有 (755) のため一般ユーザーが書き込めず、
-    別PCに繋いでも書き込めない。これを全員に開放する。
-    戻り値は (ok, note)。失敗時は ok=False と理由を返す"""
+def get_general_users():
+    """所有者選択肢用の一般ユーザー候補一覧を返す。
+    UID 1000〜60000 を基本とし、UIDが小さくても /home 配下に
+    ホームを持つユーザー（例: UID 960 のデスクトップユーザー）は拾う。
+    戻り値は {"users": [{name, uid, gid}], "default": 名前}"""
+    users = {}
+    try:
+        for pw in pwd.getpwall():
+            name, uid, gid = pw.pw_name, pw.pw_uid, pw.pw_gid
+            if name == "nobody":
+                continue
+            if 1000 <= uid < 60000:
+                users[name] = {"name": name, "uid": uid, "gid": gid}
+    except Exception:
+        pass
+    # /home 配下の所有者も候補にする（UID<1000 の人間ユーザー対策）
+    try:
+        if os.path.isdir("/home"):
+            for entry in os.listdir("/home"):
+                if entry in users:
+                    continue
+                full = os.path.join("/home", entry)
+                try:
+                    st = os.stat(full)
+                except Exception:
+                    continue
+                try:
+                    pw = pwd.getpwuid(st.st_uid)
+                    users[pw.pw_name] = {"name": pw.pw_name, "uid": pw.pw_uid, "gid": pw.pw_gid}
+                except KeyError:
+                    continue
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    # root・システムユーザーは除外する
+    users.pop("root", None)
+    ordered = sorted(users.values(), key=lambda u: (u["uid"], u["name"]))
+    default = ""
+    for u in ordered:
+        if u["uid"] == 1000:
+            default = u["name"]
+            break
+    if not default and ordered:
+        default = ordered[0]["name"]
+    return {"users": ordered, "default": default}
+
+
+def _part_fix_ext4_perms(new_part, chown_user="", chmod777=False):
+    """作成直後のext4を一時マウントして所有者変更・chmod 777 を行う。
+    mkfs直後は root所有 (755) のため一般ユーザーが書き込めない。
+    chown_user 指定時はそのユーザーに所有者を変更し、
+    chmod777 が真の場合は chmod 777 で全員に開放する（両方ONなら両方適用）。
+    戻り値は (ok, note, warning)。何もしない場合は (True, "", "") を返す"""
+    chown_user = (chown_user or "").strip()
+    if not chown_user and not chmod777:
+        return True, "", ""
+    # 所有者の解決（chown 指定時のみ。名前・数値UIDのどちらも受け付ける）
+    uid = gid = None
+    if chown_user:
+        try:
+            if chown_user.isdigit():
+                pw = pwd.getpwuid(int(chown_user))
+            else:
+                pw = pwd.getpwnam(chown_user)
+            uid, gid = pw.pw_uid, pw.pw_gid
+        except KeyError:
+            return False, "", f"ユーザー {chown_user} が見つかりません"
+        except Exception as e:
+            return False, "", f"ユーザー解決に失敗しました: {e}"
     tmpdir = ""
     try:
-        tmpdir = tempfile.mkdtemp(prefix="dm-chmod-")
+        tmpdir = tempfile.mkdtemp(prefix="dm-perm-")
     except Exception as e:
-        return False, f"一時ディレクトリを作成できません: {e}"
+        return False, "", f"一時ディレクトリを作成できません: {e}"
     try:
         rc, out = _run_cmd(["mount", new_part, tmpdir], timeout=60)
         if rc != 0:
-            return False, f"一時マウントに失敗しました: {out[:200]}"
-        try:
-            os.chmod(tmpdir, 0o777)
-        except Exception as e:
-            return False, f"chmod 777 に失敗しました: {e}"
-        return True, "chmod 777済み"
+            return False, "", f"一時マウントに失敗しました: {out[:200]}"
+        notes = []
+        if uid is not None:
+            try:
+                os.chown(tmpdir, uid, gid)
+                notes.append(f"所有者: {chown_user}に変更済み")
+            except Exception as e:
+                return False, "", f"所有者変更に失敗しました: {e}"
+        if chmod777:
+            try:
+                os.chmod(tmpdir, 0o777)
+                notes.append("chmod 777済み")
+            except Exception as e:
+                base = "・".join(notes)
+                suffix = f"（{base}までは適用済み）" if base else ""
+                return False, "", f"chmod 777 に失敗しました{suffix}: {e}"
+        return True, "・".join(notes), ""
     finally:
         try:
             _run_cmd(["umount", tmpdir], timeout=60)
@@ -2343,7 +2420,7 @@ def _part_chmod_open(new_part):
             pass
 
 
-def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type="", chmod777=True):
+def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type="", chmod777=False, chown_user=""):
     """空き領域にパーティションを作成し、ファイルシステムを初期化する
     未初期化ディスクでは table_type（gpt/msdos、既定gpt）で先に初期化してから作成する
     システムドライブ上の空き領域への作成も許可する（既存パーティションには触れないため安全。
@@ -2467,17 +2544,23 @@ def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type
             "part": new_part}
     _part_refresh(disk)
     # ext4 は mkfs直後 root所有 (755) のため一般ユーザーが書き込めない。
-    # デフォルト有効のオプションで chmod 777 し、全員に開放する
-    if fstype == "ext4" and chmod777:
-        ok777, note777 = _part_chmod_open(new_part)
+    # 所有者の一般ユーザー化（既定ON相当・UI側で選択）と
+    # chmod 777 開放（既定OFF）を単一マウントで適用する
+    chown_user = (chown_user or "").strip()
+    if fstype == "ext4" and (chown_user or chmod777):
+        ok777, note777, warn777 = _part_fix_ext4_perms(new_part, chown_user, chmod777)
         _part_refresh(disk)
         if ok777:
-            return {"ok": True,
-                "message": f"{new_part} ({fstype}) を作成しました（全員に開放: {note777}）",
-                "part": new_part, "chmod777": True}
+            suffix = f"（{note777}）" if note777 else ""
+            res = {"ok": True,
+                "message": f"{new_part} ({fstype}) を作成しました{suffix}",
+                "part": new_part, "chmod777": bool(chmod777)}
+            if chown_user:
+                res["chown_user"] = chown_user
+            return res
         return {"ok": True,
-            "message": f"{new_part} ({fstype}) を作成しました（開放処理に失敗: {note777}。手動で mount 後に chmod 777 してください）",
-            "part": new_part, "chmod777": False, "chmod_warning": note777}
+            "message": f"{new_part} ({fstype}) を作成しました（権限調整に失敗: {warn777}。手動で mount 後に chown/chmod してください）",
+            "part": new_part, "chmod777": False, "perm_warning": warn777}
     return {"ok": True, "message": f"{new_part} ({fstype}) を作成しました", "part": new_part}
 
 
@@ -3709,6 +3792,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(get_rsync_progress())
         elif p.path == "/api/part/check":
             self._json(get_part_tools())
+        elif p.path == "/api/part/owners":
+            self._json(get_general_users())
         elif p.path == "/api/part/devices":
             self._json(get_part_devices())
         else:
@@ -4343,12 +4428,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 size_bytes = 0
         start_bytes = data.get("start_bytes")
-        # ext4のchmod 777開放オプション（既定True。ext4以外では無視される）
-        chmod777 = data.get("chmod777", data.get("chmod_777", True))
+        # ext4の権限オプション（chmodは既定OFF、所有者変更はUI側既定ON。
+        # ext4以外では無視される）
+        chmod777 = data.get("chmod777", data.get("chmod_777", False))
         if isinstance(chmod777, str):
             chmod777 = chmod777.strip().lower() not in ("0", "false", "no", "off", "")
         chmod777 = bool(chmod777)
-        res = part_create(disk, fstype, size_bytes, label, start_bytes, table_type, chmod777)
+        chown_user = (data.get("chown_user", data.get("owner", data.get("chown", ""))) or "").strip()
+        # 後方互換：旧UIは chmod777=True を送ることがある。その場合は所有者指定なしの開放のみ
+        res = part_create(disk, fstype, size_bytes, label, start_bytes, table_type, chmod777, chown_user)
         self._json(res, 200 if res.get("ok") else 400)
 
     def _handle_part_mklabel(self, data):
