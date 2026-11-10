@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>rsync ファイルコピー - Disk Manager v.0.9.0</title>
+<title>rsync ファイルコピー - Disk Manager v.1.0.0</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -181,7 +181,11 @@ select:focus,input:focus{outline:none;border-color:#38bdf8}
                 <input type="text" id="dst-base" placeholder="/mnt/diskmanager-rsync/dst/...">
                 <div class="help-text">存在しない場合は自動作成されます（マウント内に限る）</div>
                 <div class="inline-row">
+                    <button class="btn btn-secondary" onclick="goUpDstDir()">上へ</button>
                     <button class="btn btn-info" onclick="loadDstList()">一覧表示</button>
+                </div>
+                <div class="inline-row">
+                    <input type="text" id="dst-new-name" placeholder="新しいフォルダ名" style="flex:1;min-width:0">
                     <button class="btn btn-secondary" onclick="mkdirDst()">フォルダ作成</button>
                 </div>
                 <div id="dst-exist-msg"></div>
@@ -573,8 +577,17 @@ async function checkDstExists() {
 }
 
 async function mkdirDst() {
-    const path = document.getElementById('dst-base').value.trim();
-    if (!path) { notify('コピー先フォルダを入力してください', 'error'); return; }
+    const base = document.getElementById('dst-base').value.trim();
+    const nameEl = document.getElementById('dst-new-name');
+    const name = (nameEl.value || '').trim();
+    if (!base) { notify('コピー先フォルダを入力してください', 'error'); return; }
+    let path = base;
+    if (name) {
+        if (/[\/\\]/.test(name) || name.startsWith('.')) {
+            notify('フォルダ名に「/」「\\」は使用できず、ドット始まりも不可です', 'error'); return;
+        }
+        path = base.replace(/\/+$/, '') + '/' + name;
+    }
     try {
         const res = await fetch('/api/rsync/mkdir', {
             method: 'POST',
@@ -583,7 +596,8 @@ async function mkdirDst() {
         });
         const data = await res.json();
         if (!data.ok) { notify('エラー: ' + (data.error || '作成失敗'), 'error'); return; }
-        notify('フォルダを作成しました', 'success');
+        notify('フォルダを作成しました' + (name ? '（' + name + '）' : ''), 'success');
+        if (name) nameEl.value = '';
         checkDstExists();
         loadDstList();
     } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
@@ -597,6 +611,25 @@ function goUpSrcDir() {
     if (!cur || !cur.includes('/')) { notify('これ以上上へは移動できません', 'error'); return; }
     baseEl.value = cur.replace(/\/[^/]*$/, '') || '/';
     loadList();
+}
+
+function goUpDstDir() {
+    const baseEl = document.getElementById('dst-base');
+    const raw = baseEl.value.trim();
+    if (!raw) { notify('コピー先フォルダを入力してください', 'error'); return; }
+    const cur = raw.replace(/\/+$/, '');
+    if (!cur || !cur.includes('/')) { notify('これ以上上へは移動できません', 'error'); return; }
+    baseEl.value = cur.replace(/\/[^/]*$/, '') || '/';
+    checkDstExists();
+    loadDstList();
+}
+
+function enterDstDir(dirName) {
+    const baseEl = document.getElementById('dst-base');
+    const cur = baseEl.value.trim().replace(/\/+$/, '');
+    baseEl.value = cur + '/' + dirName;
+    checkDstExists();
+    loadDstList();
 }
 
 function enterSrcDir(dirName) {
@@ -694,18 +727,21 @@ async function loadDstList() {
         entries.forEach(e => {
             const row = document.createElement('div');
             row.className = 'file-row';
+            const isDir = e.type === 'dir';
             const tag = document.createElement('span');
-            tag.className = 'tag' + (e.type === 'dir' ? ' dir' : (e.type === 'link' ? ' link' : ''));
-            tag.textContent = e.type === 'dir' ? 'フォルダ' : (e.type === 'file' ? 'ファイル' : e.type);
+            tag.className = 'tag' + (isDir ? ' dir' : (e.type === 'link' ? ' link' : ''));
+            tag.textContent = isDir ? 'フォルダ' : (e.type === 'file' ? 'ファイル' : e.type);
             const name = document.createElement('span');
             name.className = 'name';
             name.textContent = e.name;
+            if (isDir) { name.classList.add('dir-link'); name.title = 'クリックでこのフォルダに移動'; }
             const meta = document.createElement('span');
             meta.className = 'meta';
-            meta.textContent = (e.type === 'dir' ? '' : e.size_h + ' ｜ ') + (e.mtime || '');
+            meta.textContent = (isDir ? '' : e.size_h + ' ｜ ') + (e.mtime || '');
             row.appendChild(tag);
             row.appendChild(name);
             row.appendChild(meta);
+            if (isDir) row.addEventListener('click', () => enterDstDir(e.name));
             listEl.appendChild(row);
         });
     } catch(e) {
@@ -986,6 +1022,9 @@ async function init() {
     await refreshMounts();
     await checkStatus();
     document.getElementById('dst-base').addEventListener('input', checkDstExists);
+    document.getElementById('dst-new-name').addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') { ev.preventDefault(); mkdirDst(); }
+    });
     setInterval(checkStatus, 5000);
 }
 init();
