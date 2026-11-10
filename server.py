@@ -14,7 +14,7 @@ import urllib.request
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3361
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -2590,8 +2590,15 @@ def part_create(disk, fstype, size_bytes, label="", start_bytes=None, table_type
         return {"ok": False, "error": "アライメント調整後に有効な領域が残りません（サイズを調整してください）"}
     # GPT ではデータ用パーティション名が必要な場合があるため付与
     _, bounds_before, _ = _parted_parse_free(disk)
-    rc, out = _run_cmd(["parted", "-s", disk, "mkpart", "primary",
-        f"{start_al}B", f"{end_al}B"], timeout=120)
+    mkpart_cmd = ["parted", "-s", disk, "mkpart", "primary"]
+    # ntfs は種別を明示しないと GPT で「Linux filesystem data」タイプ
+    # （msdos では 0x83）になり、Windows がドライブ文字を割り当てず
+    # 中身が見えなくなるため、ファイルシステム種別を指定して
+    # GPT: Microsoft basic data / msdos: 0x07 を設定する
+    if fstype == "ntfs":
+        mkpart_cmd.append("ntfs")
+    mkpart_cmd += [f"{start_al}B", f"{end_al}B"]
+    rc, out = _run_cmd(mkpart_cmd, timeout=120)
     if rc != 0:
         return {"ok": False, "error": f"パーティション作成に失敗しました: {out[:300]}"}
     _part_refresh(disk)
