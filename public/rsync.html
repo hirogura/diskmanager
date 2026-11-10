@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>rsync ファイルコピー - Disk Manager v.0.8.0</title>
+<title>rsync ファイルコピー - Disk Manager v.0.9.0</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -172,6 +172,7 @@ select:focus,input:focus{outline:none;border-color:#38bdf8}
                 <input type="text" id="src-base" placeholder="/mnt/diskmanager-rsync/src/...">
                 <div class="help-text">マウント後に自動入力されます。サブフォルダまで指定可能です</div>
                 <div class="inline-row">
+                    <button class="btn btn-secondary" onclick="goUpSrcDir()">上へ</button>
                     <button class="btn btn-info" onclick="loadList()">一覧表示</button>
                 </div>
             </div>
@@ -586,6 +587,16 @@ async function mkdirDst() {
         checkDstExists();
         loadDstList();
     } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
+}
+
+function goUpSrcDir() {
+    const baseEl = document.getElementById('src-base');
+    const raw = baseEl.value.trim();
+    if (!raw) { notify('コピー元フォルダを指定してください', 'error'); return; }
+    const cur = raw.replace(/\/+$/, '');
+    if (!cur || !cur.includes('/')) { notify('これ以上上へは移動できません', 'error'); return; }
+    baseEl.value = cur.replace(/\/[^/]*$/, '') || '/';
+    loadList();
 }
 
 function enterSrcDir(dirName) {
