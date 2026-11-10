@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>rsync ファイルコピー - Disk Manager v.0.7.1</title>
+<title>rsync ファイルコピー - Disk Manager v.0.8.0</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -74,6 +74,7 @@ select:focus,input:focus{outline:none;border-color:#38bdf8}
 .file-row:hover{background:#1a2332}
 .file-row input[type=checkbox]{width:16px;height:16px;flex-shrink:0}
 .file-row .name{flex:1;word-break:break-all}
+.file-row .name.dir-link{cursor:pointer;color:#60a5fa;text-decoration:underline}
 .file-row .meta{color:#94a3b8;font-size:0.82em;white-space:nowrap}
 .file-row .tag{font-size:0.75em;padding:2px 8px;border-radius:10px;background:#334155;color:#cbd5e1;flex-shrink:0}
 .file-row .tag.dir{background:#166534;color:#bbf7d0}
@@ -587,6 +588,13 @@ async function mkdirDst() {
     } catch(e) { notify('通信エラー: ' + e.message, 'error'); }
 }
 
+function enterSrcDir(dirName) {
+    const baseEl = document.getElementById('src-base');
+    const cur = baseEl.value.trim().replace(/\/+$/, '');
+    baseEl.value = cur + '/' + dirName;
+    loadList();
+}
+
 async function loadList() {
     const base = document.getElementById('src-base').value.trim();
     const listEl = document.getElementById('file-list');
@@ -617,22 +625,32 @@ async function loadList() {
             cb.checked = true;
             cb.value = e.name;
             cb.className = 'file-check';
+            const isDir = e.type === 'dir';
             const tag = document.createElement('span');
-            tag.className = 'tag' + (e.type === 'dir' ? ' dir' : (e.type === 'link' ? ' link' : ''));
-            tag.textContent = e.type === 'dir' ? 'フォルダ' : (e.type === 'file' ? 'ファイル' : e.type);
+            tag.className = 'tag' + (isDir ? ' dir' : (e.type === 'link' ? ' link' : ''));
+            tag.textContent = isDir ? 'フォルダ' : (e.type === 'file' ? 'ファイル' : e.type);
             const name = document.createElement('span');
             name.className = 'name';
             name.textContent = e.name;
+            if (isDir) { name.classList.add('dir-link'); name.title = 'クリックでこのフォルダに移動'; }
             const meta = document.createElement('span');
             meta.className = 'meta';
-            meta.textContent = (e.type === 'dir' ? '' : e.size_h + ' ｜ ') + (e.mtime || '');
+            meta.textContent = (isDir ? '' : e.size_h + ' ｜ ') + (e.mtime || '');
             row.appendChild(cb);
             row.appendChild(tag);
             row.appendChild(name);
             row.appendChild(meta);
-            row.addEventListener('click', ev => {
-                if (ev.target !== cb) cb.checked = !cb.checked;
-            });
+            if (isDir) {
+                cb.addEventListener('click', ev => ev.stopPropagation());
+                row.addEventListener('click', ev => {
+                    if (ev.target === cb) return;
+                    enterSrcDir(e.name);
+                });
+            } else {
+                row.addEventListener('click', ev => {
+                    if (ev.target !== cb) cb.checked = !cb.checked;
+                });
+            }
             listEl.appendChild(row);
         });
     } catch(e) {
